@@ -150,26 +150,36 @@
       syncFromFrame(); renderPreview(); addHistory(`修改定位: ${val || 'static'}`);
     });
 
-    // 位置微调按钮
+    // 位置微调按钮（使用 transform: translate）
+    function getTranslateValues(el) {
+      const t = el.style.transform;
+      const m = t.match(/translate\(([-\d.]+)px\s*,?\s*([-\d.]+)px\)/);
+      return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0, 0];
+    }
+    function setTranslate(el, x, y) {
+      if (x === 0 && y === 0) {
+        el.style.transform = '';
+      } else {
+        el.style.transform = `translate(${x}px, ${y}px)`;
+      }
+    }
+
     $$('.nudge-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!currentEl) return;
         const dir = btn.dataset.dir;
         const delta = parseInt(btn.dataset.delta, 10);
-        const cs = getComputedStyle(currentEl);
-        let current = 0;
-        if (dir === 'top') {
-          current = parseFloat(cs.top) || 0;
-          const newVal = current + delta;
-          currentEl.style.top = newVal + 'px';
-          els.propTopVal.value = newVal;
-        } else if (dir === 'left') {
-          current = parseFloat(cs.left) || 0;
-          const newVal = current + delta;
-          currentEl.style.left = newVal + 'px';
-          els.propLeftVal.value = newVal;
+        const [tx, ty] = getTranslateValues(currentEl);
+        if (dir === 'x') {
+          const newX = tx + delta;
+          setTranslate(currentEl, newX, ty);
+          els.propTopVal.value = newX;
+        } else if (dir === 'y') {
+          const newY = ty + delta;
+          setTranslate(currentEl, tx, newY);
+          els.propLeftVal.value = newY;
         }
-        syncFromFrame(); renderPreview(); addHistory(`微调 ${dir}: ${delta > 0 ? '+' : ''}${delta}px`);
+        syncFromFrame(); addHistory(`微调 ${dir === 'x' ? '水平' : '垂直'}: ${delta > 0 ? '+' : ''}${delta}px`);
       });
     });
 
@@ -177,22 +187,18 @@
     els.propTopVal.addEventListener('change', () => {
       if (!currentEl) return;
       const val = els.propTopVal.value;
-      if (val === '') {
-        currentEl.style.top = '';
-      } else {
-        currentEl.style.top = val + 'px';
-      }
-      syncFromFrame(); renderPreview(); addHistory('设置 top');
+      const [, ty] = getTranslateValues(currentEl);
+      const newX = val === '' ? 0 : parseFloat(val);
+      setTranslate(currentEl, newX, ty);
+      syncFromFrame(); addHistory('设置 X 偏移');
     });
     els.propLeftVal.addEventListener('change', () => {
       if (!currentEl) return;
       const val = els.propLeftVal.value;
-      if (val === '') {
-        currentEl.style.left = '';
-      } else {
-        currentEl.style.left = val + 'px';
-      }
-      syncFromFrame(); renderPreview(); addHistory('设置 left');
+      const [tx] = getTranslateValues(currentEl);
+      const newY = val === '' ? 0 : parseFloat(val);
+      setTranslate(currentEl, tx, newY);
+      syncFromFrame(); addHistory('设置 Y 偏移');
     });
 
     [els.propColor, els.propColorText].forEach(el =>
@@ -369,32 +375,29 @@
         dragState.el = this;
         isDragging = true;
 
-        // 保存原始定位
+        // 解析当前已有的 transform，保留除 translate 外的其他变换
         const cs = getComputedStyle(this);
-        dragState.originalPosition = cs.position;
-        dragState.originalTop = this.style.top;
-        dragState.originalLeft = this.style.left;
-        dragState.originalRight = this.style.right;
-        dragState.originalBottom = this.style.bottom;
-
-        // 获取当前在视口中的位置
-        const rect = this.getBoundingClientRect();
-
-        // 将元素改为absolute定位，保留当前视觉位置不变
-        if (cs.position === 'static' || !cs.position || cs.position === 'relative') {
-          this.style.position = 'absolute';
-          this.style.left = rect.left + 'px';
-          this.style.top = rect.top + 'px';
-          this.style.right = 'auto';
-          this.style.bottom = 'auto';
+        const currentTransform = cs.transform;
+        let baseTx = 0, baseTy = 0;
+        const match = currentTransform.match(/matrix\(([^)]+)\)/);
+        if (match) {
+          const vals = match[1].split(/,\s*/).map(Number);
+          baseTx = vals[4] || 0;
+          baseTy = vals[5] || 0;
         }
+        dragState.baseTx = baseTx;
+        dragState.baseTy = baseTy;
 
-        // 计算鼠标相对于元素左上角的偏移
+        // 计算鼠标相对于元素左上角的偏移（用于平滑拖拽）
+        const rect = this.getBoundingClientRect();
         dragState.offsetX = e.clientX - rect.left;
         dragState.offsetY = e.clientY - rect.top;
+        dragState.startMouseX = e.clientX;
+        dragState.startMouseY = e.clientY;
 
         // 视觉反馈
         this.classList.add('html-editor-dragging');
+        showToast('🖱 拖动鼠标以移动元素', 'info');
       });
 
       Array.from(el.children).forEach(walk);
@@ -405,15 +408,16 @@
     doc.addEventListener('mousemove', function(e) {
       if (!dragState.active || !dragState.el) return;
       e.preventDefault();
-      const iframe = els.previewFrame;
-      const iframeRect = iframe.getBoundingClientRect();
 
-      // 计算元素在iframe内的新位置
-      const newX = e.clientX - dragState.offsetX;
-      const newY = e.clientY - dragState.offsetY;
+      // 使用 transform: translate() 来移动元素，不改变任何定位属性
+      // 这样元素始终在文档流中，不会破坏页面布局
+      const dx = e.clientX - dragState.startMouseX;
+      const dy = e.clientY - dragState.startMouseY;
 
-      dragState.el.style.left = newX + 'px';
-      dragState.el.style.top  = newY + 'px';
+      const newTx = dragState.baseTx + dx;
+      const newTy = dragState.baseTy + dy;
+
+      dragState.el.style.transform = `translate(${newTx}px, ${newTy}px)`;
     });
 
     doc.addEventListener('mouseup', function(e) {
@@ -422,13 +426,14 @@
         dragState.el.classList.remove('html-editor-dragging');
       }
       dragState.active = false;
-      dragState.el = null;
       isDragging = false;
-      // 同步回主HTML（注意：syncFromFrame会修改currentHtml，但不要在这里renderPreview，
-      // 因为mouseup事件中iframe被重写会导致事件丢失。我们只做数据同步）
-      syncFromFrame();
-      addHistory('拖拽移动元素');
-      showToast('✅ 元素位置已更新，同步完成', 'success');
+      // 延迟重置，让click事件先触发完成选中状态同步
+      setTimeout(() => {
+        dragState.el = null;
+        syncFromFrame();
+        addHistory('拖拽移动元素');
+        showToast('✅ 元素位置已更新', 'success');
+      }, 50);
     });
   }
 
@@ -512,12 +517,16 @@
       els.propHtmlContent.value = el.innerHTML;
     }
 
-    /* 定位相关 */
+    /* 定位相关（读取 transform: translate 的值） */
     els.propPosition.value = cs.position === 'static' ? '' : cs.position;
-    const topVal = parseFloat(cs.top);
-    const leftVal = parseFloat(cs.left);
-    els.propTopVal.value = isNaN(topVal) ? '' : Math.round(topVal);
-    els.propLeftVal.value = isNaN(leftVal) ? '' : Math.round(leftVal);
+    const tMatch = (el.getAttribute('style') || '').match(/translate\(([-\d.]+)px\s*,?\s*([-\d.]+)px\)/);
+    if (tMatch) {
+      els.propTopVal.value = Math.round(parseFloat(tMatch[1]));
+      els.propLeftVal.value = Math.round(parseFloat(tMatch[2]));
+    } else {
+      els.propTopVal.value = '';
+      els.propLeftVal.value = '';
+    }
 
     const rgbToHex = rgb => {
       if (!rgb || /rgba?\(0\s*,\s*0\s*,\s*0/i.test(rgb) || rgb === 'transparent') return '';

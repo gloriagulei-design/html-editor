@@ -757,30 +757,30 @@
                   <option value="sticky">粘性定位 (sticky)</option>
                 </select>
               </div>
-              <!-- 位置微调 -->
+              <!-- 位置微调（使用 transform: translate）-->
               <div class="prop-group">
                 <div class="prop-label" style="display:flex;align-items:center;gap:8px;">
                   <span>位置微调（px）</span>
                   <span style="font-size:10px;color:var(--text-dim);font-weight:400;">点击箭头精确调整</span>
                 </div>
                 <div class="position-nudge-grid">
-                  <!-- Top Row -->
+                  <!-- X偏移 Row -->
                   <div class="nudge-row">
-                    <span class="nudge-label">上 Top</span>
-                    <button class="nudge-btn" data-dir="top" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
-                    <button class="nudge-btn" data-dir="top" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
-                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="auto">
-                    <button class="nudge-btn" data-dir="top" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
-                    <button class="nudge-btn" data-dir="top" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
+                    <span class="nudge-label">X 偏移</span>
+                    <button class="nudge-btn" data-dir="x" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
+                    <button class="nudge-btn" data-dir="x" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
+                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="0">
+                    <button class="nudge-btn" data-dir="x" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
+                    <button class="nudge-btn" data-dir="x" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
                   </div>
-                  <!-- Left Row -->
+                  <!-- Y偏移 Row -->
                   <div class="nudge-row">
-                    <span class="nudge-label">左 Left</span>
-                    <button class="nudge-btn" data-dir="left" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
-                    <button class="nudge-btn" data-dir="left" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
-                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="auto">
-                    <button class="nudge-btn" data-dir="left" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
-                    <button class="nudge-btn" data-dir="left" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
+                    <span class="nudge-label">Y 偏移</span>
+                    <button class="nudge-btn" data-dir="y" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
+                    <button class="nudge-btn" data-dir="y" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
+                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="0">
+                    <button class="nudge-btn" data-dir="y" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
+                    <button class="nudge-btn" data-dir="y" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
                   </div>
                 </div>
               </div>
