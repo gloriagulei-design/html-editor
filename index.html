@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTML可视化编辑器 Pro</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.1/css/all.min.css" />
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #1a1a1f;
+      --surface-light: #22222a;
+      --border: #2a2a35;
+      --border-light: #353545;
+      --text: #e8e8ed;
+      --text-muted: #888899;
+      --text-dim: #555566;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --accent-glow: rgba(99, 102, 241, 0.2);
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+      --sidebar-bg: #0c0c10;
+      --sidebar-width: 280px;
+      --header-height: 56px;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: #333344 transparent;
+    }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333344; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #444455; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+      font-size: 14px;
+    }
+
+    /* ────────────── Header ────────────── */
+    .app-header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--header-height);
+      background: rgba(15, 15, 18, 0.92);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      z-index: 1000;
+    }
+
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-icon {
+      width: 32px; height: 32px;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--accent), #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      color: #fff;
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+    .logo-text { font-weight: 600; font-size: 15px; letter-spacing: -0.3px; color: var(--text); }
+    .logo-sub  { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+    .header-tabs {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      display: flex;
+      gap: 2px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 3px;
+    }
+    .tab-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 14px;
+      border: none;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      background: var(--surface-light);
+      color: var(--text);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ────────────── Toolbar buttons ────────────── */
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      border: none;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--surface); color: var(--text); border-color: var(--border-light); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #7c3aed);
+      color: #fff;
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+    .btn-primary:hover { box-shadow: 0 4px 16px var(--accent-glow); }
+    .btn-success {
+      background: linear-gradient(135deg, var(--success), #10b981);
+      color: #064e3b;
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(52,211,153,0.2);
+    }
+    .btn-danger {
+      background: rgba(248,113,113,0.15);
+      color: var(--danger);
+      border: 1px solid rgba(248,113,113,0.3);
+    }
+    .btn-danger:hover { background: rgba(248,113,113,0.25); }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+    /* ────────────── Main Layout ────────────── */
+    .app-main {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+      padding-top: var(--header-height);
+    }
+
+    /* ────────────── Sidebar ────────────── */
+    .sidebar {
+      width: var(--sidebar-width);
+      flex-shrink: 0;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-right { border-right: none; border-left: 1px solid var(--border); }
+    .sidebar-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600; font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+    .sidebar-header i { font-size: 10px; }
+
+    /* ────────────── Drop Zone ────────────── */
+    .drop-zone {
+      margin: 16px;
+      padding: 32px 20px;
+      border: 2px dashed var(--border-light);
+      border-radius: var(--radius-md);
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s;
+      background: var(--surface);
+    }
+    .drop-zone:hover {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.05);
+    }
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.1);
+      transform: scale(1.01);
+      box-shadow: 0 0 0 4px var(--accent-glow);
+    }
+    body.drag-active .drop-zone {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.05);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .drop-zone i { font-size: 28px; color: var(--text-dim); transition: color 0.2s; }
+    .drop-zone:hover i { color: var(--accent); }
+    .drop-zone p { margin: 10px 0 4px; color: var(--text-muted); font-size: 13px; }
+    .drop-zone span { color: var(--text-dim); font-size: 11px; }
+
+    /* ────────────── File Info ────────────── */
+    .file-card {
+      margin: 16px;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      display: none;
+      align-items: center; gap: 10px;
+    }
+    .file-card.show { display: flex; }
+    .file-icon-wrap {
+      width: 36px; height: 36px;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--accent), #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: #fff;
+    }
+    .file-details { flex: 1; min-width: 0; }
+    .file-name { display: block; font-weight: 600; font-size: 13px; color: var(--text); }
+    .file-size { font-size: 11px; color: var(--text-dim); }
+
+    /* ────────────── Element Tree ────────────── */
+    .tree-wrap { flex: 1; overflow: auto; padding: 4px 0; }
+    .tree-node {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 16px 5px 16px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tree-node:hover { background: rgba(99,102,241,0.06); border-left-color: var(--accent); }
+    .tree-node.selected { background: rgba(99,102,241,0.12); border-left-color: var(--accent); }
+    .tree-node i { font-size: 9px; color: var(--text-dim); width: 14px; text-align: center; }
+    .tree-node .node-tag {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--surface-light);
+      color: var(--accent-hover);
+    }
+    .tree-node .node-text { font-size: 11px; color: var(--text-muted); }
+
+    /* ────────────── Content Area ────────────── */
+    .content-area {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+      background: var(--bg);
+    }
+    .content-area.view-split .preview-wrap,
+    .content-area.view-split .code-panel { width: 50%; }
+
+    .preview-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+      overflow: auto;
+    }
+    .preview-frame-wrap {
+      flex: 1;
+      min-height: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+    }
+    .preview-frame-wrap::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 32px;
+      background: linear-gradient(180deg, var(--surface-light) 0%, transparent 100%);
+      z-index: 2;
+      pointer-events: none;
+    }
+    #preview-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+      min-height: 500px;
+    }
+
+    /* ────────────── Code Panel ────────────── */
+    .code-panel {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      margin: 20px;
+      overflow: hidden;
+      box-shadow: var(--shadow-md);
+    }
+    .code-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px;
+      background: var(--surface-light);
+      border-bottom: 1px solid var(--border);
+    }
+    .code-toolbar .toolbar-group { display: flex; align-items: center; gap: 4px; }
+    .code-info { font-size: 11px; color: var(--text-dim); }
+    .btn-icon {
+      width: 28px; height: 28px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .btn-icon:hover { background: var(--surface); color: var(--text); border-color: var(--border-light); }
+    .code-editor {
+      flex: 1;
+      overflow: auto;
+      margin: 0; padding: 16px;
+      font-family: 'SF Mono', 'Fira Code', 'Source Code Pro', monospace;
+      font-size: 12.5px;
+      line-height: 1.7;
+      background: var(--surface);
+    }
+    .code-editor pre { margin: 0 !important; padding: 0 !important; background: transparent !important; }
+    .code-editor code { background: transparent !important; }
+
+    /* ────────────── Properties Panel ────────────── */
+    .properties-panel {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+    }
+    .props-scroll { flex: 1; overflow-y: auto; padding: 0 16px 16px; }
+    .prop-nav {
+      display: flex;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .prop-tab {
+      flex: 1;
+      text-align: center;
+      padding: 10px 4px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .prop-tab:hover { color: var(--text); }
+    .prop-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .prop-group { margin-top: 14px; }
+    .prop-label {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 6px;
+    }
+    .prop-input {
+      width: 100%;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface); color: var(--text);
+      font-size: 12px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .prop-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .prop-input::placeholder { color: var(--text-dim); }
+    textarea.prop-input { resize: vertical; min-height: 60px; font-family: inherit; }
+    .prop-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .color-picker-wrap { display: flex; gap: 8px; }
+    .color-input { width: 36px; height: 32px; border: none; border-radius: var(--radius-sm); cursor: pointer; }
+    .color-text { flex: 1; }
+    .btn-group { display: flex; gap: 2px; }
+    .btn-group .btn-icon { width: 32px; height: 32px; }
+    .btn-group .btn-icon.active { background: var(--accent-glow); border-color: var(--accent); color: var(--accent-hover); }
+
+    .prop-footer { padding: 12px 16px; border-top: 1px solid var(--border); }
+    .prop-footer .btn { width: 100%; justify-content: center; }
+
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%;
+      padding: 30px;
+      text-align: center;
+      color: var(--text-dim);
+    }
+    .empty-state i { font-size: 32px; margin-bottom: 12px; color: var(--text-dim); opacity: 0.6; }
+    .empty-state p { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+
+    /* ────────────── Search ────────────── */
+    .search-bar-wrap {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .search-bar-wrap i { color: var(--text-dim); font-size: 11px; }
+    .search-bar-wrap input {
+      background: transparent; border: none; color: var(--text);
+      font-size: 12px; outline: none; width: 100%;
+    }
+    .search-bar-wrap input::placeholder { color: var(--text-dim); }
+
+    /* ────────────── History ────────────── */
+    .history-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 16px;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .history-item:hover { background: rgba(99,102,241,0.04); border-left-color: var(--accent); }
+    .history-time { margin-left: auto; font-size: 10px; color: var(--text-dim); }
+
+    /* ────────────── Modal ────────────── */
+    .overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      z-index: 2000;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.25s;
+    }
+    .overlay.show { opacity: 1; pointer-events: auto; }
+    .modal {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%) scale(0.95);
+      width: 560px; max-width: 90vw;
+      max-height: 80vh;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      z-index: 2001;
+      display: flex; flex-direction: column;
+      opacity: 0; pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .modal.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .modal-body { padding: 16px 18px; flex: 1; overflow: auto; }
+    .modal-body textarea {
+      width: 100%; min-height: 300px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px; line-height: 1.7;
+      resize: vertical;
+    }
+    .modal-body textarea:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .modal-footer {
+      display: flex; justify-content: flex-end; gap: 8px;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ────────────── Toast ────────────── */
+    .toast-container {
+      position: fixed;
+      bottom: 20px; right: 20px;
+      z-index: 3000;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .toast {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: 500;
+      animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      box-shadow: var(--shadow-md);
+      pointer-events: none;
+    }
+    .toast-success { background: linear-gradient(135deg, rgba(34,197,94,0.2), rgba(34,197,94,0.1)); border: 1px solid rgba(34,197,94,0.3); color: #34d399; }
+    .toast-error   { background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(239,68,68,0.1)); border: 1px solid rgba(239,68,68,0.3); color: #f87171; }
+    .toast-info    { background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(99,102,241,0.1)); border: 1px solid rgba(99,102,241,0.3); color: #a5b4fc; }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ────────────── Badge ────────────── */
+    .badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 18px; height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--accent-glow);
+      color: var(--accent-hover);
+      font-size: 10px; font-weight: 700;
+    }
+
+    /* ────────────── Responsive hack ────────────── */
+    @media (max-width: 960px) {
+      .sidebar { width: 220px; }
+    }
+
+    /* ────────────── Animation utilities ────────────── */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in { animation: fadeIn 0.3s ease both; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .pulse { animation: pulse 2s ease-in-out infinite; }
+    /* ── 位置微调控件 ── */
+    .position-nudge-grid { display: flex; flex-direction: column; gap: 6px; }
+    .nudge-row {
+      display: flex; align-items: center; gap: 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px 6px;
+    }
+    .nudge-label {
+      min-width: 48px;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .nudge-btn {
+      width: 24px; height: 24px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px;
+      transition: all 0.15s;
+    }
+    .nudge-btn:hover {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .nudge-btn:active { transform: scale(0.92); }
+    .nudge-input {
+      width: 50px;
+      padding: 3px 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 11px;
+      text-align: center;
+      outline: none;
+    }
+    .nudge-input:focus { border-color: var(--accent); }
+    .nudge-input::-webkit-inner-spin-button,
+    .nudge-input::-webkit-outer-spin-button { opacity: 1; height: 16px; }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <!-- ── Header ── -->
+    <header class="app-header">
+      <div class="logo-wrap">
+        <div class="logo-icon"><i class="fas fa-code"></i></div>
+        <div>
+          <div class="logo-text">HTML可视化编辑器</div>
+          <div class="logo-sub">所见即所得 · Pro版</div>
+        </div>
+      </div>
+
+      <div class="header-tabs">
+        <button class="tab-btn active" data-view="design">
+          <i class="fas fa-pen-ruler"></i><span>设计</span>
+        </button>
+        <button class="tab-btn" data-view="split">
+          <i class="fas fa-columns"></i><span>拆分</span>
+        </button>
+        <button class="tab-btn" data-view="code">
+          <i class="fas fa-code"></i><span>代码</span>
+        </button>
+      </div>
+
+      <div class="header-right">
+        <button class="btn btn-ghost btn-sm" id="btn-open-file">
+          <i class="fas fa-folder-open"></i> 打开本地文件
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-new">
+          <i class="fas fa-file"></i> 新建
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-reset">
+          <i class="fas fa-rotate-left"></i> 重置
+        </button>
+        <div style="width:1px; height:20px; background:var(--border); margin:0 4px;"></div>
+        <button class="btn btn-primary" id="btn-download">
+          <i class="fas fa-download"></i> 导出 HTML
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Main ── -->
+    <main class="app-main">
+      <!-- left sidebar -->
+      <aside class="sidebar" id="sidebar-left">
+        <div class="sidebar-header">
+          <i class="fas fa-folder-open"></i> 文件
+        </div>
+        <div style="padding-bottom:8px;">
+          <div class="drop-zone" id="drop-zone">
+            <i class="fas fa-cloud-arrow-up"></i>
+            <p>拖拽 HTML 文件到此处</p>
+            <span>或点击选择文件</span>
+            <input type="file" id="file-input" accept=".html,.htm" hidden />
+          </div>
+          <div class="file-card" id="file-info">
+            <div class="file-icon-wrap"><i class="fas fa-file-code"></i></div>
+            <div class="file-details">
+              <span class="file-name" id="file-name">report.html</span>
+              <span class="file-size" id="file-size">12.5 KB</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-replace"><i class="fas fa-rotate"></i></button>
+          </div>
+        </div>
+
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden; border-top:1px solid var(--border);">
+          <div class="sidebar-header">
+            <i class="fas fa-sitemap"></i> 页面结构
+            <span class="badge" id="element-count" style="margin-left:auto;">0</span>
+          </div>
+          <div class="search-bar-wrap">
+            <i class="fas fa-search"></i>
+            <input type="text" id="element-search" placeholder="搜索元素..." />
+          </div>
+          <div class="tree-wrap" id="element-tree-wrap">
+            <div id="element-tree"></div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- content -->
+      <div class="content-area" id="content-area">
+        <div class="preview-wrap" id="preview-wrap">
+          <div class="preview-frame-wrap">
+            <iframe id="preview-frame" sandbox="allow-same-origin allow-scripts allow-popups"></iframe>
+          </div>
+        </div>
+        <div class="code-panel" id="code-panel">
+          <div class="code-toolbar">
+            <div class="toolbar-group">
+              <button class="btn-icon" id="btn-copy-code" title="复制"><i class="fas fa-copy"></i></button>
+              <button class="btn-icon" id="btn-format-code" title="格式化"><i class="fas fa-indent"></i></button>
+            </div>
+            <span class="code-info" id="code-info">HTML · 0 bytes</span>
+          </div>
+          <div class="code-editor">
+            <pre><code id="code-content" class="language-html"></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- right sidebar -->
+      <aside class="sidebar sidebar-right" id="sidebar-right">
+        <div class="sidebar-header">
+          <i class="fas fa-sliders-h"></i> 属性面板
+        </div>
+        <div class="empty-state" id="sidebar-message">
+          <i class="fas fa-mouse-pointer"></i>
+          <p>点击左侧元素树<br/>或直接在预览区点击元素<br/>开始编辑内容</p>
+        </div>
+        <div class="properties-panel" id="properties-panel">
+          <div class="prop-nav">
+            <button class="prop-tab active" data-tab="content">内容</button>
+            <button class="prop-tab" data-tab="style">样式</button>
+            <button class="prop-tab" data-tab="attrs">属性</button>
+          </div>
+          <div class="props-scroll">
+            <div class="prop-body" data-panel="content">
+              <div class="prop-group">
+                <div class="prop-label">
+                  <span>文本内容</span>
+                  <span class="node-tag" id="prop-tag">span</span>
+                </div>
+                <textarea class="prop-input prop-textarea" id="prop-text-content" rows="4" placeholder="输入文本内容..."></textarea>
+              </div>
+              <div class="prop-group" id="prop-html-group" style="display:none;">
+                <div class="prop-label">
+                  <span>HTML 源码</span>
+                  <button class="btn-icon btn-sm" id="btn-edit-html" title="弹窗编辑"><i class="fas fa-pen-to-square"></i></button>
+                </div>
+                <textarea class="prop-input prop-textarea" id="prop-html-content" rows="6" placeholder="HTML内容..."></textarea>
+              </div>
+              <div class="prop-label" style="margin-top:10px; justify-content:center; color:var(--text-dim); font-weight:400; text-transform:none; letter-spacing:0;">
+                💡 提示：也可在预览区直接双击文字编辑
+              </div>
+            </div>
+
+            <div class="prop-body" data-panel="style" style="display:none;">
+              <!-- 定位类型 -->
+              <div class="prop-group">
+                <div class="prop-label">定位类型</div>
+                <select class="prop-input" id="prop-position">
+                  <option value="">默认 (static)</option>
+                  <option value="relative">相对定位 (relative)</option>
+                  <option value="absolute">绝对定位 (absolute)</option>
+                  <option value="fixed">固定定位 (fixed)</option>
+                  <option value="sticky">粘性定位 (sticky)</option>
+                </select>
+              </div>
+              <!-- 位置微调 -->
+              <div class="prop-group">
+                <div class="prop-label" style="display:flex;align-items:center;gap:8px;">
+                  <span>位置微调（px）</span>
+                  <span style="font-size:10px;color:var(--text-dim);font-weight:400;">点击箭头精确调整</span>
+                </div>
+                <div class="position-nudge-grid">
+                  <!-- Top Row -->
+                  <div class="nudge-row">
+                    <span class="nudge-label">上 Top</span>
+                    <button class="nudge-btn" data-dir="top" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
+                    <button class="nudge-btn" data-dir="top" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
+                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="auto">
+                    <button class="nudge-btn" data-dir="top" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
+                    <button class="nudge-btn" data-dir="top" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
+                  </div>
+                  <!-- Left Row -->
+                  <div class="nudge-row">
+                    <span class="nudge-label">左 Left</span>
+                    <button class="nudge-btn" data-dir="left" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
+                    <button class="nudge-btn" data-dir="left" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
+                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="auto">
+                    <button class="nudge-btn" data-dir="left" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
+                    <button class="nudge-btn" data-dir="left" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
+                  </div>
+                </div>
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">文字颜色</div>
+                <div class="color-picker-wrap">
+                  <input type="color" class="color-input" id="prop-color" />
+                  <input type="text" class="prop-input color-text" id="prop-color-text" placeholder="#000000" />
+                </div>
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">背景颜色</div>
+                <div class="color-picker-wrap">
+                  <input type="color" class="color-input" id="prop-bg-color" />
+                  <input type="text" class="prop-input color-text" id="prop-bg-color-text" placeholder="transparent" />
+                </div>
+              </div>
+              <div class="prop-row">
+                <div class="prop-group">
+                  <div class="prop-label">字体大小</div>
+                  <input type="text" class="prop-input" id="prop-font-size" placeholder="16px" />
+                </div>
+                <div class="prop-group">
+                  <div class="prop-label">字重</div>
+                  <select class="prop-input" id="prop-font-weight">
+                    <option value="">默认</option>
+                    <option value="100">100</option>
+                    <option value="300">300</option>
+                    <option value="400">400</option>
+                    <option value="500">500</option>
+                    <option value="600">600</option>
+                    <option value="700">700</option>
+                    <option value="900">900</option>
+                  </select>
+                </div>
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">对齐方式</div>
+                <div class="btn-group" id="prop-align">
+                  <button class="btn-icon" data-value="left" title="左对齐"><i class="fas fa-align-left"></i></button>
+                  <button class="btn-icon" data-value="center" title="居中"><i class="fas fa-align-center"></i></button>
+                  <button class="btn-icon" data-value="right" title="右对齐"><i class="fas fa-align-right"></i></button>
+                  <button class="btn-icon" data-value="justify" title="两端"><i class="fas fa-align-justify"></i></button>
+                </div>
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">内边距</div>
+                <input type="text" class="prop-input" id="prop-padding" placeholder="8px 12px" />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">外边距</div>
+                <input type="text" class="prop-input" id="prop-margin" placeholder="0 0 10px 0" />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">圆角</div>
+                <input type="text" class="prop-input" id="prop-radius" placeholder="4px" />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">边框</div>
+                <input type="text" class="prop-input" id="prop-border" placeholder="1px solid #333" />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">自定义 CSS</div>
+                <textarea class="prop-input prop-textarea" id="prop-custom-css" rows="3" placeholder="输入额外CSS..."></textarea>
+              </div>
+            </div>
+
+            <div class="prop-body" data-panel="attrs" style="display:none;">
+              <div class="prop-group">
+                <div class="prop-label">链接地址 (href)</div>
+                <input type="text" class="prop-input" id="prop-href" placeholder="https://..." />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">图片地址 (src)</div>
+                <input type="text" class="prop-input" id="prop-src" placeholder="https://..." />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">ID</div>
+                <input type="text" class="prop-input" id="prop-id" placeholder="元素ID" />
+              </div>
+              <div class="prop-group">
+                <div class="prop-label">Class</div>
+                <input type="text" class="prop-input" id="prop-class" placeholder="类名，空格分隔" />
+              </div>
+            </div>
+          </div>
+          <div class="prop-footer">
+            <button class="btn btn-danger" id="btn-delete-el">
+              <i class="fas fa-trash-can"></i> 删除元素
+            </button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Overlay + Modal -->
+    <div class="overlay" id="overlay"></div>
+    <div class="modal" id="html-modal">
+      <div class="modal-header">
+        <h3><i class="fas fa-code"></i> 编辑 HTML 源码</h3>
+        <button class="btn-icon" id="btn-close-modal"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="modal-body">
+        <textarea id="modal-html-textarea"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-sm" id="btn-modal-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-modal-ok">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
