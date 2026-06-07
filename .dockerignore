@@ -1,0 +1,19 @@
+# 版本控制
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+
+# README
+README.md
+docs
