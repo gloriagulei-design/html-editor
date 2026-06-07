@@ -11,6 +11,7 @@
   let currentEl     = null;
   let editHistory   = [];
   let isDragging    = false;
+  const dragState   = { active: false, el: null, offsetX: 0, offsetY: 0, originalPosition: '', originalTop: '', originalLeft: '' };
 
   /* ── DOM 缓存 ── */
   const $  = s => document.querySelector(s);
@@ -319,6 +320,14 @@
           outline-offset: 1px !important;
           cursor: text !important;
         }
+        .html-editor-dragging {
+          outline: 3px solid #10b981 !important;
+          outline-offset: 2px !important;
+          opacity: 0.85 !important;
+          z-index: 99999 !important;
+          cursor: grabbing !important;
+          box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
+        }
         .html-editor-hover::after {
           content: attr(data-tag);
           position: absolute; top: -18px; left: 0;
@@ -365,20 +374,27 @@
         dragState.originalPosition = cs.position;
         dragState.originalTop = this.style.top;
         dragState.originalLeft = this.style.left;
+        dragState.originalRight = this.style.right;
+        dragState.originalBottom = this.style.bottom;
 
-        // 将元素改为absolute定位，便于自由移动
-        if (cs.position === 'static' || !cs.position) {
+        // 获取当前在视口中的位置
+        const rect = this.getBoundingClientRect();
+
+        // 将元素改为absolute定位，保留当前视觉位置不变
+        if (cs.position === 'static' || !cs.position || cs.position === 'relative') {
           this.style.position = 'absolute';
+          this.style.left = rect.left + 'px';
+          this.style.top = rect.top + 'px';
+          this.style.right = 'auto';
+          this.style.bottom = 'auto';
         }
 
         // 计算鼠标相对于元素左上角的偏移
-        const rect = this.getBoundingClientRect();
         dragState.offsetX = e.clientX - rect.left;
         dragState.offsetY = e.clientY - rect.top;
 
         // 视觉反馈
         this.classList.add('html-editor-dragging');
-        showToast('🖱 拖动鼠标以移动元素', 'info');
       });
 
       Array.from(el.children).forEach(walk);
@@ -408,10 +424,11 @@
       dragState.active = false;
       dragState.el = null;
       isDragging = false;
-      // 同步回主HTML
+      // 同步回主HTML（注意：syncFromFrame会修改currentHtml，但不要在这里renderPreview，
+      // 因为mouseup事件中iframe被重写会导致事件丢失。我们只做数据同步）
       syncFromFrame();
       addHistory('拖拽移动元素');
-      showToast('✅ 元素位置已更新', 'success');
+      showToast('✅ 元素位置已更新，同步完成', 'success');
     });
   }
 
