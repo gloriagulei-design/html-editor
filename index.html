@@ -557,6 +557,54 @@
       50% { opacity: 0.6; }
     }
     .pulse { animation: pulse 2s ease-in-out infinite; }
+    /* ── 位置微调控件 ── */
+    .position-nudge-grid { display: flex; flex-direction: column; gap: 6px; }
+    .nudge-row {
+      display: flex; align-items: center; gap: 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px 6px;
+    }
+    .nudge-label {
+      min-width: 48px;
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .nudge-btn {
+      width: 24px; height: 24px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px;
+      transition: all 0.15s;
+    }
+    .nudge-btn:hover {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .nudge-btn:active { transform: scale(0.92); }
+    .nudge-input {
+      width: 50px;
+      padding: 3px 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 11px;
+      text-align: center;
+      outline: none;
+    }
+    .nudge-input:focus { border-color: var(--accent); }
+    .nudge-input::-webkit-inner-spin-button,
+    .nudge-input::-webkit-outer-spin-button { opacity: 1; height: 16px; }
   </style>
 </head>
 
@@ -698,6 +746,44 @@
             </div>
 
             <div class="prop-body" data-panel="style" style="display:none;">
+              <!-- 定位类型 -->
+              <div class="prop-group">
+                <div class="prop-label">定位类型</div>
+                <select class="prop-input" id="prop-position">
+                  <option value="">默认 (static)</option>
+                  <option value="relative">相对定位 (relative)</option>
+                  <option value="absolute">绝对定位 (absolute)</option>
+                  <option value="fixed">固定定位 (fixed)</option>
+                  <option value="sticky">粘性定位 (sticky)</option>
+                </select>
+              </div>
+              <!-- 位置微调 -->
+              <div class="prop-group">
+                <div class="prop-label" style="display:flex;align-items:center;gap:8px;">
+                  <span>位置微调（px）</span>
+                  <span style="font-size:10px;color:var(--text-dim);font-weight:400;">点击箭头精确调整</span>
+                </div>
+                <div class="position-nudge-grid">
+                  <!-- Top Row -->
+                  <div class="nudge-row">
+                    <span class="nudge-label">上 Top</span>
+                    <button class="nudge-btn" data-dir="top" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
+                    <button class="nudge-btn" data-dir="top" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
+                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="auto">
+                    <button class="nudge-btn" data-dir="top" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
+                    <button class="nudge-btn" data-dir="top" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
+                  </div>
+                  <!-- Left Row -->
+                  <div class="nudge-row">
+                    <span class="nudge-label">左 Left</span>
+                    <button class="nudge-btn" data-dir="left" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
+                    <button class="nudge-btn" data-dir="left" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
+                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="auto">
+                    <button class="nudge-btn" data-dir="left" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
+                    <button class="nudge-btn" data-dir="left" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
+                  </div>
+                </div>
+              </div>
               <div class="prop-group">
                 <div class="prop-label">文字颜色</div>
                 <div class="color-picker-wrap">

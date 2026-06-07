@@ -62,6 +62,9 @@
     propSrc         : $('#prop-src'),
     propId          : $('#prop-id'),
     propClass       : $('#prop-class'),
+    propPosition    : $('#prop-position'),
+    propTopVal      : $('#prop-top-val'),
+    propLeftVal     : $('#prop-left-val'),
 
     btnReset        : $('#btn-reset'),
     btnNew          : $('#btn-new'),
@@ -133,6 +136,64 @@
     els.propHtmlContent.addEventListener('input', updateHtmlContent);
 
     /* 样式改动 */
+
+    // 定位类型
+    els.propPosition.addEventListener('change', () => {
+      const val = els.propPosition.value;
+      if (!currentEl) return;
+      if (val) {
+        currentEl.style.position = val;
+      } else {
+        currentEl.style.position = '';
+      }
+      syncFromFrame(); renderPreview(); addHistory(`修改定位: ${val || 'static'}`);
+    });
+
+    // 位置微调按钮
+    $$('.nudge-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!currentEl) return;
+        const dir = btn.dataset.dir;
+        const delta = parseInt(btn.dataset.delta, 10);
+        const cs = getComputedStyle(currentEl);
+        let current = 0;
+        if (dir === 'top') {
+          current = parseFloat(cs.top) || 0;
+          const newVal = current + delta;
+          currentEl.style.top = newVal + 'px';
+          els.propTopVal.value = newVal;
+        } else if (dir === 'left') {
+          current = parseFloat(cs.left) || 0;
+          const newVal = current + delta;
+          currentEl.style.left = newVal + 'px';
+          els.propLeftVal.value = newVal;
+        }
+        syncFromFrame(); renderPreview(); addHistory(`微调 ${dir}: ${delta > 0 ? '+' : ''}${delta}px`);
+      });
+    });
+
+    // 位置输入框回车确认
+    els.propTopVal.addEventListener('change', () => {
+      if (!currentEl) return;
+      const val = els.propTopVal.value;
+      if (val === '') {
+        currentEl.style.top = '';
+      } else {
+        currentEl.style.top = val + 'px';
+      }
+      syncFromFrame(); renderPreview(); addHistory('设置 top');
+    });
+    els.propLeftVal.addEventListener('change', () => {
+      if (!currentEl) return;
+      const val = els.propLeftVal.value;
+      if (val === '') {
+        currentEl.style.left = '';
+      } else {
+        currentEl.style.left = val + 'px';
+      }
+      syncFromFrame(); renderPreview(); addHistory('设置 left');
+    });
+
     [els.propColor, els.propColorText].forEach(el =>
       el.addEventListener('input', () => updateStyle('color', els.propColorText.value || els.propColor.value)));
     [els.propBgColor, els.propBgColorText].forEach(el =>
@@ -241,7 +302,7 @@
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc || !doc.body) return;
 
-    /* 注入编辑器交互样式 */
+    /* 注入编辑器交互样式（含拖拽移动支持） */
     let style = doc.getElementById('html-editor-injected');
     if (!style) {
       style = doc.createElement('style');
@@ -250,7 +311,7 @@
         .html-editor-selected {
           outline: 2.5px solid #6366f1 !important;
           outline-offset: 2px !important;
-          cursor: text !important;
+          cursor: move !important;
           background: rgba(99,102,241,0.05) !important;
         }
         .html-editor-hover {
@@ -271,6 +332,8 @@
       if (doc.head) doc.head.appendChild(style);
     }
 
+    let selectedEl = null; /* 当前选中的元素 */
+
     function walk(el) {
       if (!el || el.nodeType !== 1 || el.id === 'html-editor-injected') return;
       el.setAttribute('data-tag', el.tagName.toLowerCase());
@@ -287,9 +350,69 @@
       el.addEventListener('dblclick', function (e) {
         e.preventDefault(); e.stopPropagation(); enableInlineEdit(this);
       });
+      /* ── 拖拽移动：mousedown ── */
+      el.addEventListener('mousedown', function (e) {
+        if (e.button !== 0) return; // 仅左键
+        // 只有当前已选中的元素才能拖拽
+        if (this !== currentEl) return;
+        e.preventDefault(); e.stopPropagation();
+        dragState.active = true;
+        dragState.el = this;
+        isDragging = true;
+
+        // 保存原始定位
+        const cs = getComputedStyle(this);
+        dragState.originalPosition = cs.position;
+        dragState.originalTop = this.style.top;
+        dragState.originalLeft = this.style.left;
+
+        // 将元素改为absolute定位，便于自由移动
+        if (cs.position === 'static' || !cs.position) {
+          this.style.position = 'absolute';
+        }
+
+        // 计算鼠标相对于元素左上角的偏移
+        const rect = this.getBoundingClientRect();
+        dragState.offsetX = e.clientX - rect.left;
+        dragState.offsetY = e.clientY - rect.top;
+
+        // 视觉反馈
+        this.classList.add('html-editor-dragging');
+        showToast('🖱 拖动鼠标以移动元素', 'info');
+      });
+
       Array.from(el.children).forEach(walk);
     }
     walk(doc.body);
+
+    /* ── iframe 内全局 mousemove / mouseup ── */
+    doc.addEventListener('mousemove', function(e) {
+      if (!dragState.active || !dragState.el) return;
+      e.preventDefault();
+      const iframe = els.previewFrame;
+      const iframeRect = iframe.getBoundingClientRect();
+
+      // 计算元素在iframe内的新位置
+      const newX = e.clientX - dragState.offsetX;
+      const newY = e.clientY - dragState.offsetY;
+
+      dragState.el.style.left = newX + 'px';
+      dragState.el.style.top  = newY + 'px';
+    });
+
+    doc.addEventListener('mouseup', function(e) {
+      if (!dragState.active) return;
+      if (dragState.el) {
+        dragState.el.classList.remove('html-editor-dragging');
+      }
+      dragState.active = false;
+      dragState.el = null;
+      isDragging = false;
+      // 同步回主HTML
+      syncFromFrame();
+      addHistory('拖拽移动元素');
+      showToast('✅ 元素位置已更新', 'success');
+    });
   }
 
   /* ── 元素选中 / 编辑 ── */
@@ -371,6 +494,13 @@
       els.propTextContent.value = el.textContent;
       els.propHtmlContent.value = el.innerHTML;
     }
+
+    /* 定位相关 */
+    els.propPosition.value = cs.position === 'static' ? '' : cs.position;
+    const topVal = parseFloat(cs.top);
+    const leftVal = parseFloat(cs.left);
+    els.propTopVal.value = isNaN(topVal) ? '' : Math.round(topVal);
+    els.propLeftVal.value = isNaN(leftVal) ? '' : Math.round(leftVal);
 
     const rgbToHex = rgb => {
       if (!rgb || /rgba?\(0\s*,\s*0\s*,\s*0/i.test(rgb) || rgb === 'transparent') return '';
