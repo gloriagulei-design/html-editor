@@ -1,0 +1,20 @@
+{
+  "name": "html-editor",
+  "version": "1.0.0",
+  "description": "一款现代化的 HTML 可视化编辑器，支持所见即所得的拖拽设计、实时代码预览、以及无缝的元素编辑体验。",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "pdf-lib": "^1.17.1",
+    "puppeteer-core": "^24.43.1"
+  }
+}

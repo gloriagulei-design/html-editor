@@ -76,6 +76,7 @@
     btnReset        : $('#btn-reset'),
     btnNew          : $('#btn-new'),
     btnDownload     : $('#btn-download'),
+    btnDownloadPdf  : $('#btn-download-pdf'),
     btnDeleteEl     : $('#btn-delete-el'),
     btnCopyCode     : $('#btn-copy-code'),
     btnFormatCode   : $('#btn-format-code'),
@@ -268,6 +269,7 @@
     els.btnReset     .addEventListener('click', resetEditor);
     els.btnNew       .addEventListener('click', () => loadDefaultContent());
     els.btnDownload  .addEventListener('click', downloadHtml);
+    els.btnDownloadPdf.addEventListener('click', downloadPdf);
     els.btnCopyCode  .addEventListener('click', copyCode);
     els.btnFormatCode.addEventListener('click', formatCode);
     els.btnDeleteEl  .addEventListener('click', deleteCurrentElement);
@@ -907,6 +909,72 @@
     a.href = url; a.download = currentFileName; a.click();
     URL.revokeObjectURL(url);
     showToast(`已导出 ${currentFileName}`, 'success');
+  }
+
+  /* ── 导出 PDF ── */
+  async function downloadPdf() {
+    syncFromFrame();
+    if (!currentHtml || currentHtml.trim() === '') {
+      showToast('没有可导出的内容', 'error');
+      return;
+    }
+
+    const btn = els.btnDownloadPdf;
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 生成中…';
+
+    try {
+      // 构建完整的 HTML 文档（确保包含所有样式）
+      let fullHtml = currentHtml;
+      // 如果当前内容不是完整HTML文档，包装一下
+      if (!currentHtml.trim().toLowerCase().startsWith('<!doctype') && !currentHtml.trim().toLowerCase().startsWith('<html')) {
+        fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${currentFileName}</title>
+</head>
+<body>
+${currentHtml}
+</body>
+</html>`;
+      }
+
+      const response = await fetch('/api/html-to-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          html: fullHtml,
+          filename: currentFileName
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ error: '未知错误' }));
+        throw new Error(errData.error || `HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const pdfName = currentFileName.replace(/\.html?$/i, '') + '.pdf';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = pdfName;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      const pages = response.headers.get('X-PDF-Pages') || '?';
+      const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
+      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB)`, 'success');
+    } catch (err) {
+      console.error('PDF 导出失败:', err);
+      showToast(`❌ PDF 导出失败: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }
   }
 
   function resetEditor() {
