@@ -11,6 +11,13 @@
   let currentEl     = null;
   let editHistory   = [];
   let isDragging    = false;
+  const dragState   = { active: false, el: null, offsetX: 0, offsetY: 0, originalPosition: '', originalTop: '', originalLeft: '' };
+
+  /* ── 撤销/重做 状态 ── */
+  let undoStack = [];
+  let redoStack = [];
+  let isUndoing = false; // 标记正在执行撤销，避免记录
+  const MAX_UNDO = 50; // 最大保留50步历史
 
   /* ── DOM 缓存 ── */
   const $  = s => document.querySelector(s);
@@ -88,6 +95,7 @@
   function init() {
     bindEvents();
     loadDefaultContent();
+    updateUndoUI();
     showToast('HTML 可视化编辑器已就绪，拖拽文件或双击文字即可编辑', 'success');
   }
 
@@ -141,6 +149,7 @@
     els.propPosition.addEventListener('change', () => {
       const val = els.propPosition.value;
       if (!currentEl) return;
+      pushUndo(`修改定位: ${val || 'static'}`, currentHtml);
       if (val) {
         currentEl.style.position = val;
       } else {
@@ -149,49 +158,58 @@
       syncFromFrame(); renderPreview(); addHistory(`修改定位: ${val || 'static'}`);
     });
 
-    // 位置微调按钮
+    // 位置微调按钮（使用 transform: translate）
+    function getTranslateValues(el) {
+      const t = el.style.transform;
+      const m = t.match(/translate\(([-\d.]+)px\s*,?\s*([-\d.]+)px\)/);
+      return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0, 0];
+    }
+    function setTranslate(el, x, y) {
+      if (x === 0 && y === 0) {
+        el.style.transform = '';
+      } else {
+        el.style.transform = `translate(${x}px, ${y}px)`;
+      }
+    }
+
     $$('.nudge-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!currentEl) return;
         const dir = btn.dataset.dir;
         const delta = parseInt(btn.dataset.delta, 10);
-        const cs = getComputedStyle(currentEl);
-        let current = 0;
-        if (dir === 'top') {
-          current = parseFloat(cs.top) || 0;
-          const newVal = current + delta;
-          currentEl.style.top = newVal + 'px';
-          els.propTopVal.value = newVal;
-        } else if (dir === 'left') {
-          current = parseFloat(cs.left) || 0;
-          const newVal = current + delta;
-          currentEl.style.left = newVal + 'px';
-          els.propLeftVal.value = newVal;
+        pushUndo(`微调 ${dir === 'x' ? '水平' : '垂直'}: ${delta > 0 ? '+' : ''}${delta}px`, currentHtml);
+        const [tx, ty] = getTranslateValues(currentEl);
+        if (dir === 'x') {
+          const newX = tx + delta;
+          setTranslate(currentEl, newX, ty);
+          els.propTopVal.value = newX;
+        } else if (dir === 'y') {
+          const newY = ty + delta;
+          setTranslate(currentEl, tx, newY);
+          els.propLeftVal.value = newY;
         }
-        syncFromFrame(); renderPreview(); addHistory(`微调 ${dir}: ${delta > 0 ? '+' : ''}${delta}px`);
+        syncFromFrame(); addHistory(`微调 ${dir === 'x' ? '水平' : '垂直'}: ${delta > 0 ? '+' : ''}${delta}px`);
       });
     });
 
     // 位置输入框回车确认
     els.propTopVal.addEventListener('change', () => {
       if (!currentEl) return;
+      pushUndo('设置 X 偏移', currentHtml);
       const val = els.propTopVal.value;
-      if (val === '') {
-        currentEl.style.top = '';
-      } else {
-        currentEl.style.top = val + 'px';
-      }
-      syncFromFrame(); renderPreview(); addHistory('设置 top');
+      const [, ty] = getTranslateValues(currentEl);
+      const newX = val === '' ? 0 : parseFloat(val);
+      setTranslate(currentEl, newX, ty);
+      syncFromFrame(); addHistory('设置 X 偏移');
     });
     els.propLeftVal.addEventListener('change', () => {
       if (!currentEl) return;
+      pushUndo('设置 Y 偏移', currentHtml);
       const val = els.propLeftVal.value;
-      if (val === '') {
-        currentEl.style.left = '';
-      } else {
-        currentEl.style.left = val + 'px';
-      }
-      syncFromFrame(); renderPreview(); addHistory('设置 left');
+      const [tx] = getTranslateValues(currentEl);
+      const newY = val === '' ? 0 : parseFloat(val);
+      setTranslate(currentEl, tx, newY);
+      syncFromFrame(); addHistory('设置 Y 偏移');
     });
 
     [els.propColor, els.propColorText].forEach(el =>
@@ -206,6 +224,7 @@
     els.propRadius   .addEventListener('input', () => updateStyle('borderRadius', els.propRadius.value));
     els.propCustomCss.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改自定义CSS', currentHtml);
       currentEl.setAttribute('style', els.propCustomCss.value);
       renderPreview(); addHistory('修改自定义CSS');
     });
@@ -213,6 +232,7 @@
     /* 对齐 */
     $$('#prop-align .btn-icon').forEach(btn =>
       btn.addEventListener('click', () => {
+        pushUndo('修改对齐方式', currentHtml);
         updateStyle('textAlign', btn.dataset.value);
         $$('#prop-align .btn-icon').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
@@ -221,21 +241,25 @@
     /* 属性改动 */
     els.propHref.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 href', currentHtml);
       currentEl.setAttribute('href', els.propHref.value);
       renderPreview(); addHistory('修改 href');
     });
     els.propSrc.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 src', currentHtml);
       currentEl.setAttribute('src', els.propSrc.value);
       renderPreview(); addHistory('修改 src');
     });
     els.propId.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 ID', currentHtml);
       currentEl.setAttribute('id', els.propId.value);
       renderPreview(); addHistory('修改 ID');
     });
     els.propClass.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 Class', currentHtml);
       currentEl.setAttribute('class', els.propClass.value);
       renderPreview(); addHistory('修改 Class');
     });
@@ -248,6 +272,30 @@
     els.btnFormatCode.addEventListener('click', formatCode);
     els.btnDeleteEl  .addEventListener('click', deleteCurrentElement);
     els.btnEditHtml  .addEventListener('click', openHtmlModal);
+
+    /* 撤销/重做按钮 */
+    const btnUndo = $('#btn-undo');
+    const btnRedo = $('#btn-redo');
+    const btnUndoSidebar = $('#btn-undo-sidebar');
+    const btnRedoSidebar = $('#btn-redo-sidebar');
+    if (btnUndo) btnUndo.addEventListener('click', undo);
+    if (btnRedo) btnRedo.addEventListener('click', redo);
+    if (btnUndoSidebar) btnUndoSidebar.addEventListener('click', undo);
+    if (btnRedoSidebar) btnRedoSidebar.addEventListener('click', redo);
+
+    /* 键盘快捷键 Ctrl+Z / Ctrl+Shift+Z */
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' || e.key === 'Z') {
+          e.preventDefault();
+          if (e.shiftKey) { redo(); }
+          else { undo(); }
+        } else if (e.key === 'y' || e.key === 'Y') {
+          e.preventDefault();
+          redo();
+        }
+      }
+    });
 
     /* 弹窗 */
     els.btnCloseModal .addEventListener('click', closeHtmlModal);
@@ -286,7 +334,8 @@
     els.fileSize.textContent = formatBytes(size || new Blob([html]).size);
     els.dropZone.style.display = 'none';
     els.fileInfo.classList.add('show');
-    editHistory = []; updateHistoryUI();
+    editHistory = []; undoStack = []; redoStack = [];
+    updateHistoryUI(); updateUndoUI();
     showToast(`已加载「${name}」`, 'success');
   }
 
@@ -318,6 +367,14 @@
           outline: 1.5px dashed rgba(99,102,241,0.5) !important;
           outline-offset: 1px !important;
           cursor: text !important;
+        }
+        .html-editor-dragging {
+          outline: 3px solid #10b981 !important;
+          outline-offset: 2px !important;
+          opacity: 0.85 !important;
+          z-index: 99999 !important;
+          cursor: grabbing !important;
+          box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
         }
         .html-editor-hover::after {
           content: attr(data-tag);
@@ -360,21 +417,25 @@
         dragState.el = this;
         isDragging = true;
 
-        // 保存原始定位
+        // 解析当前已有的 transform，保留除 translate 外的其他变换
         const cs = getComputedStyle(this);
-        dragState.originalPosition = cs.position;
-        dragState.originalTop = this.style.top;
-        dragState.originalLeft = this.style.left;
-
-        // 将元素改为absolute定位，便于自由移动
-        if (cs.position === 'static' || !cs.position) {
-          this.style.position = 'absolute';
+        const currentTransform = cs.transform;
+        let baseTx = 0, baseTy = 0;
+        const match = currentTransform.match(/matrix\(([^)]+)\)/);
+        if (match) {
+          const vals = match[1].split(/,\s*/).map(Number);
+          baseTx = vals[4] || 0;
+          baseTy = vals[5] || 0;
         }
+        dragState.baseTx = baseTx;
+        dragState.baseTy = baseTy;
 
-        // 计算鼠标相对于元素左上角的偏移
+        // 计算鼠标相对于元素左上角的偏移（用于平滑拖拽）
         const rect = this.getBoundingClientRect();
         dragState.offsetX = e.clientX - rect.left;
         dragState.offsetY = e.clientY - rect.top;
+        dragState.startMouseX = e.clientX;
+        dragState.startMouseY = e.clientY;
 
         // 视觉反馈
         this.classList.add('html-editor-dragging');
@@ -389,15 +450,16 @@
     doc.addEventListener('mousemove', function(e) {
       if (!dragState.active || !dragState.el) return;
       e.preventDefault();
-      const iframe = els.previewFrame;
-      const iframeRect = iframe.getBoundingClientRect();
 
-      // 计算元素在iframe内的新位置
-      const newX = e.clientX - dragState.offsetX;
-      const newY = e.clientY - dragState.offsetY;
+      // 使用 transform: translate() 来移动元素，不改变任何定位属性
+      // 这样元素始终在文档流中，不会破坏页面布局
+      const dx = e.clientX - dragState.startMouseX;
+      const dy = e.clientY - dragState.startMouseY;
 
-      dragState.el.style.left = newX + 'px';
-      dragState.el.style.top  = newY + 'px';
+      const newTx = dragState.baseTx + dx;
+      const newTy = dragState.baseTy + dy;
+
+      dragState.el.style.transform = `translate(${newTx}px, ${newTy}px)`;
     });
 
     doc.addEventListener('mouseup', function(e) {
@@ -406,12 +468,15 @@
         dragState.el.classList.remove('html-editor-dragging');
       }
       dragState.active = false;
-      dragState.el = null;
       isDragging = false;
-      // 同步回主HTML
-      syncFromFrame();
-      addHistory('拖拽移动元素');
-      showToast('✅ 元素位置已更新', 'success');
+      // 延迟重置，让click事件先触发完成选中状态同步
+      setTimeout(() => {
+        dragState.el = null;
+        pushUndo('拖拽移动元素', currentHtml);
+        syncFromFrame();
+        addHistory('拖拽移动元素');
+        showToast('✅ 元素位置已更新', 'success');
+      }, 50);
     });
   }
 
@@ -436,6 +501,7 @@
       el.contentEditable = 'false';
       el.removeEventListener('blur', onBlur);
       el.removeEventListener('input', onInput);
+      pushUndo('编辑文本: ' + (el.textContent.trim().slice(0,20) || '[空]'), currentHtml);
       syncFromFrame(); buildElementTree(); updateCodePanel();
       addHistory('编辑文本: ' + (el.textContent.trim().slice(0,20) || '[空]'));
     };
@@ -495,12 +561,16 @@
       els.propHtmlContent.value = el.innerHTML;
     }
 
-    /* 定位相关 */
+    /* 定位相关（读取 transform: translate 的值） */
     els.propPosition.value = cs.position === 'static' ? '' : cs.position;
-    const topVal = parseFloat(cs.top);
-    const leftVal = parseFloat(cs.left);
-    els.propTopVal.value = isNaN(topVal) ? '' : Math.round(topVal);
-    els.propLeftVal.value = isNaN(leftVal) ? '' : Math.round(leftVal);
+    const tMatch = (el.getAttribute('style') || '').match(/translate\(([-\d.]+)px\s*,?\s*([-\d.]+)px\)/);
+    if (tMatch) {
+      els.propTopVal.value = Math.round(parseFloat(tMatch[1]));
+      els.propLeftVal.value = Math.round(parseFloat(tMatch[2]));
+    } else {
+      els.propTopVal.value = '';
+      els.propLeftVal.value = '';
+    }
 
     const rgbToHex = rgb => {
       if (!rgb || /rgba?\(0\s*,\s*0\s*,\s*0/i.test(rgb) || rgb === 'transparent') return '';
@@ -535,18 +605,21 @@
 
   function updateStyle(prop, val) {
     if (!currentEl || !val) return;
+    pushUndo(`修改样式: ${prop}`, currentHtml);
     currentEl.style[prop] = val;
     syncFromFrame(); renderPreview(); addHistory(`修改样式: ${prop}`);
   }
 
   function updateTextContent() {
     if (!currentEl) return;
+    pushUndo('修改文本', currentHtml);
     currentEl.textContent = els.propTextContent.value;
     syncFromFrame(); renderPreview(); buildElementTree(); addHistory('修改文本');
   }
 
   function updateHtmlContent() {
     if (!currentEl) return;
+    pushUndo('修改 HTML 内容', currentHtml);
     currentEl.innerHTML = els.propHtmlContent.value;
     syncFromFrame(); renderPreview(); addHistory('修改 HTML 内容');
   }
@@ -554,6 +627,7 @@
   function deleteCurrentElement() {
     if (!currentEl) return;
     if (!confirm('确定删除此元素？')) return;
+    pushUndo('删除元素', currentHtml);
     currentEl.remove(); syncFromFrame(); renderPreview();
     buildElementTree(); updateCodePanel(); closePropertiesPanel();
     addHistory('删除元素'); showToast('元素已删除', 'success');
@@ -572,6 +646,7 @@
   }
   function saveModalHtml() {
     if (currentEl) {
+      pushUndo('修改 HTML 源码', currentHtml);
       currentEl.innerHTML = els.modalTextarea.value;
       els.propHtmlContent.value = currentEl.innerHTML;
       syncFromFrame(); renderPreview(); addHistory('修改 HTML 源码');
@@ -688,6 +763,7 @@
   }
 
   function formatCode() {
+    pushUndo('格式化代码', currentHtml);
     let out = '', indent = 0;
     const lines = currentHtml.replace(/>(\s*)</g, '>\n<').split('\n');
     for (const ln of lines) {
@@ -706,6 +782,120 @@
     editHistory.unshift({ action, time: new Date().toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) });
     if (editHistory.length > 30) editHistory.pop();
   }
+
+  /* ── 撤销/重做 核心系统 ── */
+
+  /**
+   * 用 DOMParser 把 currentHtml 解析为完整的 Document，
+   * 提取出 body 里面的第一个子节点（即 <body> 本身），
+   * 这样可以保留完整的结构信息用于快照恢复。
+   */
+  function parseHtmlToBody(html) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      // 返回 body 元素的 outerHTML，这样恢复时最完整
+      return { body: doc.body.outerHTML, full: html };
+    } catch (e) {
+      return { body: html, full: html };
+    }
+  }
+
+  /**
+   * 压入一个可以撤销的快照。
+   * @param {string} label - 人类可读的操作描述
+   * @param {string} bodyHtml - body 的 HTML（不含 head/style/script）
+   */
+  function pushUndo(label, bodyHtml) {
+    if (isUndoing) return; // 撤销过程中不记录
+    const snap = {
+      label: label,
+      body: bodyHtml || currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    };
+    undoStack.push(snap);
+    redoStack = []; // 新操作清空重做栈
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    updateUndoUI();
+    addHistory(label);
+  }
+
+  /**
+   * 撤销一步
+   */
+  function undo() {
+    if (undoStack.length === 0) { showToast('没有可撤销的操作', 'info'); return; }
+    isUndoing = true;
+    const lastSnap = undoStack.pop();
+    redoStack.push({
+      label: lastSnap.label,
+      body: currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    });
+    // 恢复状态
+    restoreFromSnapshot(lastSnap.body);
+    showToast(`↩ 已撤销: ${lastSnap.label}`, 'success');
+    updateUndoUI();
+    updateHistoryUI();
+    setTimeout(() => { isUndoing = false; }, 50);
+  }
+
+  /**
+   * 重做一步
+   */
+  function redo() {
+    if (redoStack.length === 0) { showToast('没有可重做的操作', 'info'); return; }
+    isUndoing = true;
+    const snap = redoStack.pop();
+    undoStack.push({
+      label: snap.label,
+      body: currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    });
+    restoreFromSnapshot(snap.body);
+    showToast(`↪ 已重做: ${snap.label}`, 'success');
+    updateUndoUI();
+    updateHistoryUI();
+    setTimeout(() => { isUndoing = false; }, 50);
+  }
+
+  /**
+   * 从快照恢复当前 HTML 并重新渲染
+   */
+  function restoreFromSnapshot(html) {
+    currentHtml = html;
+    renderPreview();
+    buildElementTree();
+    updateCodePanel();
+    // 取消选中
+    currentEl = null;
+    const doc = els.previewFrame.contentDocument;
+    if (doc) doc.querySelectorAll('.html-editor-selected').forEach(e => e.classList.remove('html-editor-selected'));
+    closePropertiesPanel();
+  }
+
+  /**
+   * 更新撤销/重做按钮 UI 状态
+   */
+  function updateUndoUI() {
+    const undoBtn = $('#btn-undo');
+    const redoBtn = $('#btn-redo');
+    const undoSidebar = $('#btn-undo-sidebar');
+    const redoSidebar = $('#btn-redo-sidebar');
+    const countEl = $('#undo-count');
+
+    [undoBtn, undoSidebar].forEach(b => {
+      if (b) { b.disabled = undoStack.length === 0; }
+    });
+    [redoBtn, redoSidebar].forEach(b => {
+      if (b) { b.disabled = redoStack.length === 0; }
+    });
+    if (countEl) countEl.textContent = undoStack.length;
+  }
+
   function updateHistoryUI() { /* side effect: empty since no history-node DOM now, harmless */ }
 
   /* ── 导出 & 工具 ── */
@@ -724,7 +914,8 @@
     currentHtml = ''; currentEl = null;
     els.dropZone.style.display = null;
     els.fileInfo.classList.remove('show');
-    editHistory = []; updateHistoryUI();
+    editHistory = []; undoStack = []; redoStack = [];
+    updateHistoryUI(); updateUndoUI();
     loadDefaultContent();
     showToast('编辑器已重置', 'success');
   }
@@ -808,6 +999,539 @@
     els.fileInfo.classList.add('show');
   }
 
+  /* ═══════════════════════════════════════════════════════════════
+     语音控制命令系统 (Voice Command System)
+     原理: Web Speech API + 关键词正则匹配
+     支持: Chrome/Safari/Edge (Firefox不支持)
+  ═══════════════════════════════════════════════════════════════ */
+
+  const VoiceEngine = (function() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn('[Voice] 当前浏览器不支持 Web Speech API');
+      return null;
+    }
+
+    let recognition = null;
+    let isListening = false;
+
+    // 颜色名称到hex映射
+    const colorMap = {
+      '红': '#ef4444', '红色': '#ef4444',
+      '绿': '#22c55e', '绿色': '#22c55e',
+      '蓝': '#3b82f6', '蓝色': '#3b82f6',
+      '黄': '#eab308', '黄色': '#eab308',
+      '紫': '#8b5cf6', '紫色': '#8b5cf6',
+      '橙': '#f97316', '橙色': '#f97316',
+      '粉': '#ec4899', '粉色': '#ec4899',
+      '白': '#ffffff', '白色': '#ffffff',
+      '黑': '#000000', '黑色': '#000000',
+      '灰': '#6b7280', '灰色': '#6b7280',
+      '金': '#fbbf24', '金色': '#fbbf24',
+      '银': '#9ca3af', '银色': '#9ca3af',
+    };
+
+    // 方向映射
+    const directionMap = {
+      '下': 'down', '向下': 'down', '往下': 'down', '向下方': 'down',
+      '上': 'up',   '向上': 'up',   '往上': 'up',   '向上方': 'up',
+      '左': 'left', '向左': 'left', '往左': 'left',
+      '右': 'right','向右': 'right','往右': 'right',
+    };
+
+    // 单位映射到px
+    const unitMap = {
+      '厘米': 37.8, 'cm': 37.8,
+      '毫米': 3.78, 'mm': 3.78,
+      '像素': 1,    'px': 1,
+      '点': 1.33,   'pt': 1.33,
+      '厘米': 37.8,
+    };
+
+    // 命令正则模板
+    const commandPatterns = [
+      // 1. 替换文字: "把[目标]改成[新文字]"
+      {
+        id: 'replace',
+        name: '替换文字',
+        icon: 'fa-text',
+        tag: 'replace',
+        patterns: [/把(.+?)(?:改更|换)成(.+)/, /将(.+?)(?:改更|换)成(.+)/, /把(.+?)(?:换|改)为(.+)/],
+        desc: '将选中的文字替换为新的内容',
+        example: '把讨论稿改成初稿',
+        execute: (m) => ({ type:'replace', target:m[1].trim(), replacement:m[2].trim() })
+      },
+      // 2. 移动元素: "把[元素]往[方向]移[数值][单位]"
+      {
+        id: 'move',
+        name: '移动元素',
+        icon: 'fa-arrows-up-down-left-right',
+        tag: 'move',
+        patterns: [
+          /把(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
+          /将(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
+          /(.+?)往(下|上|左|右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个)?(.{0,3})/,
+        ],
+        desc: '将选中的元素向指定方向移动指定距离',
+        example: '把讨论稿向下移1厘米',
+        execute: (m) => {
+          const el = m[1].trim();
+          const dirRaw = m[2].trim();
+          const num = parseFloat(m[3]);
+          const unitRaw = (m[4] || '厘米').trim();
+          const dir = directionMap[dirRaw] || 'down';
+          const unit = unitMap[unitRaw] || 37.8;
+          return { type:'move', element:el, direction:dir, distance:num * unit };
+        }
+      },
+      // 3. 改颜色
+      {
+        id: 'color',
+        name: '改颜色',
+        icon: 'fa-palette',
+        tag: 'style',
+        patterns: [
+          /把(.+?)(?:的?颜色)(?:改|换)成(.+色?)/,
+          /将(.+?)(?:的?颜色)(?:改|换)成(.+色?)/,
+          /(.+?)用(.+色?)/,
+        ],
+        desc: '将文字颜色修改为指定颜色',
+        example: '把标题改成红色',
+        execute: (m) => {
+          const el = m[1].trim();
+          const colorRaw = m[2].trim();
+          const color = colorMap[colorRaw] || colorMap[colorRaw.replace('色','')] || colorRaw;
+          return { type:'color', element:el, color:color };
+        }
+      },
+      // 4. 改大小/字号
+      {
+        id: 'fontsize',
+        name: '改字号',
+        icon: 'fa-text-height',
+        tag: 'style',
+        patterns: [
+          /把(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
+          /将(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
+          /(.+?)(?:字号|字体|大小)(\d+)(?:号|px)?/,
+        ],
+        desc: '将元素字号调整为指定大小',
+        example: '把日期改成14号字',
+        execute: (m) => ({ type:'fontsize', element:m[1].trim(), size:m[2]+'px' })
+      },
+      // 5. 选中文本
+      {
+        id: 'select',
+        name: '选中元素',
+        icon: 'fa-mouse-pointer',
+        tag: 'action',
+        patterns: [
+          /选中(.+)/, /选择(.+)/, /选(.+)/, /(.*)/,
+        ],
+        desc: '在页面中选中指定元素',
+        example: '选中讨论稿',
+        execute: (m) => ({ type:'select', keyword:m[1].trim() }),
+        // select 是兜底匹配，优先级最低
+        priority: -1
+      },
+      // 6. 撤销
+      {
+        id: 'undo',
+        name: '撤销操作',
+        icon: 'fa-rotate-left',
+        tag: 'action',
+        patterns: [/撤销/, /回退/, /撤消/, /取消这一步/, /上一步/],
+        desc: '撤销最近一次操作',
+        example: '撤销',
+        execute: () => ({ type:'undo' })
+      },
+      // 7. 改背景色
+      {
+        id: 'bgcolor',
+        name: '改背景色',
+        icon: 'fa-fill-drip',
+        tag: 'style',
+        patterns: [
+          /把(.+?)(?:的?背景)(?:改|换|设)成(.+色?)/,
+          /(.+?)背景(.+色?)/,
+        ],
+        desc: '将元素背景颜色修改为指定颜色',
+        example: '把标题背景改成蓝色',
+        execute: (m) => ({
+          type:'bgcolor',
+          element:m[1].trim(),
+          color: colorMap[m[2].trim()] || colorMap[m[2].trim().replace('色','')] || m[2].trim()
+        })
+      },
+      // 8. 设置加粗
+      {
+        id: 'bold',
+        name: '加粗/取消加粗',
+        icon: 'fa-bold',
+        tag: 'style',
+        patterns: [
+          /把(.+?)加粗/, /(.+?)加粗/, /加粗(.+)/,
+          /把(.+?)取消加粗/, /(.+?)不要加粗/, /取消(.+?)加粗/,
+        ],
+        desc: '切换元素加粗状态',
+        example: '把标题加粗',
+        execute: (m) => {
+          const text = m[0];
+          const isCancel = /取消|不要|去掉/.test(text);
+          return { type:'bold', element:m[1].trim(), bold:!isCancel };
+        }
+      },
+    ];
+
+    // 初始化语音识别器
+    function init() {
+      recognition = new SpeechRecognition();
+      recognition.lang = 'zh-CN';
+      recognition.continuous = false;   // 单次识别
+      recognition.interimResults = true; // 实时中间结果
+      recognition.maxAlternatives = 5;
+
+      recognition.onstart = () => {
+        isListening = true;
+        updateVoiceUI(true);
+      };
+
+      recognition.onend = () => {
+        isListening = false;
+        updateVoiceUI(false);
+      };
+
+      recognition.onresult = (e) => {
+        const last = e.results[e.results.length - 1];
+        const transcript = last[0].transcript.trim();
+        if (last.isFinal) {
+          processCommand(transcript);
+        } else {
+          updateVoiceStatus('聆听中: ' + transcript + '...');
+        }
+      };
+
+      recognition.onerror = (e) => {
+        console.error('[Voice] 识别错误:', e.error);
+        const msg = {
+          'no-speech': '未检测到语音，请靠近麦克风重试',
+          'audio-capture': '无法捕获音频，请检查麦克风',
+          'not-allowed': '麦克风权限被拒绝，请在浏览器设置中允许',
+          'network': '网络错误，语音识别需要联网',
+        }[e.error] || '语音识别出错: ' + e.error;
+        showToast(msg, 'error');
+        stop();
+      };
+    }
+
+    // 解析并执行命令
+    function processCommand(text) {
+      console.log('[Voice] 识别到:', text);
+      updateVoiceStatus('识别: ' + text);
+
+      // 按优先级排序尝试匹配
+      const sorted = [...commandPatterns].sort((a,b) => (b.priority||0)-(a.priority||0));
+      for (const cmd of sorted) {
+        for (const pattern of cmd.patterns) {
+          const m = text.match(pattern);
+          if (m) {
+            try {
+              const parsed = cmd.execute(m);
+              if (parsed) {
+                parsed.rawText = text;   // 保留原始文本
+                showToast('💬 "' + text + '"', 'info');
+                VoiceExecutor.execute(parsed);
+                return;
+              }
+            } catch(err) {
+              console.error('[Voice] 解析命令失败:', err);
+            }
+          }
+        }
+      }
+      showToast('❓ 未识别的指令: "' + text + '"，请使用规定格式', 'error');
+    }
+
+    function start() {
+      if (!recognition) init();
+      try {
+        recognition.start();
+      } catch(e) {
+        // 可能已经开启
+        console.warn('[Voice] start() 错误:', e.message);
+      }
+    }
+    function stop() {
+      if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+      }
+      isListening = false;
+      updateVoiceUI(false);
+    }
+    function toggle() {
+      if (isListening) { stop(); }
+      else { start(); }
+      return isListening;
+    }
+
+    // 更新语音按钮UI
+    function updateVoiceUI(active) {
+      const btn = document.getElementById('btn-voice');
+      if (!btn) return;
+      if (active) {
+        btn.classList.add('active');
+        btn.innerHTML = '<i class="fas fa-microphone-lines"></i> 聆听中...';
+      } else {
+        btn.classList.remove('active');
+        btn.innerHTML = '<i class="fas fa-microphone"></i> 语音';
+      }
+    }
+
+    // 更新底部状态栏
+    function updateVoiceStatus(text) {
+      const el = document.getElementById('voice-status-text');
+      if (el) el.textContent = text;
+      const wrap = document.getElementById('voice-status');
+      if (wrap) wrap.classList.add('show');
+    }
+
+    return { start, stop, toggle, isListening: () => isListening, colorMap, init };
+  })();
+
+  /* ═══════════════════════════════════════════════════════════════
+     语音命令执行器 (Voice Executor)
+     将解析后的命令映射为实际DOM操作
+  ═══════════════════════════════════════════════════════════════ */
+
+  const VoiceExecutor = {
+    execute: function(cmd) {
+      const doc = els.previewFrame.contentDocument;
+      if (!doc) { showToast('请先加载HTML文件', 'error'); return; }
+
+      switch(cmd.type) {
+        case 'replace': this.doReplace(cmd); break;
+        case 'move':    this.doMove(cmd); break;
+        case 'color':   this.doColor(cmd); break;
+        case 'bgcolor': this.doBgColor(cmd); break;
+        case 'fontsize':this.doFontSize(cmd); break;
+        case 'bold':    this.doBold(cmd); break;
+        case 'select':  this.doSelect(cmd); break;
+        case 'undo':    undo(); break;
+        default: showToast('未实现的命令类型: ' + cmd.type, 'error');
+      }
+    },
+
+    // 在iframe中搜索包含指定文本的元素
+    findElement: function(keyword, doc) {
+      if (!doc) doc = els.previewFrame.contentDocument;
+      const all = doc.querySelectorAll('body *');
+      // 策略1: 精确文本匹配
+      for (const el of all) {
+        if (el.children.length === 0 && el.textContent.trim() === keyword) return el;
+      }
+      // 策略2: 包含文本匹配
+      for (const el of all) {
+        if (el.textContent.includes(keyword)) return el;
+      }
+      // 策略3: 模糊匹配（去掉空格后）
+      const kwNormal = keyword.replace(/\s/g,'');
+      for (const el of all) {
+        if (el.textContent.replace(/\s/g,'').includes(kwNormal)) return el;
+      }
+      return null;
+    },
+
+    doReplace: function(cmd) {
+      const el = this.findElement(cmd.target);
+      if (!el) { showToast('未找到 "' + cmd.target + '"', 'error'); return; }
+      pushUndo('语音替换: ' + cmd.target + ' → ' + cmd.replacement, currentHtml);
+      selectElement(el);
+      el.textContent = cmd.replacement;
+      syncFromFrame(); renderPreview(); buildElementTree();
+      addHistory('语音替换: ' + cmd.target + ' → ' + cmd.replacement);
+      showToast('✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"', 'success');
+    },
+
+    doMove: function(cmd) {
+      const el = currentEl || this.findElement(cmd.element);
+      if (!el) { showToast('请先选中元素或说出"选中'+cmd.element+'"', 'error'); return; }
+      pushUndo('语音移动: ' + cmd.direction + ' ' + cmd.distance + 'px', currentHtml);
+      if (el !== currentEl) selectElement(el);
+      const [tx, ty] = this._getTranslate(el);
+      let nx = tx, ny = ty;
+      const d = cmd.distance;
+      switch(cmd.direction) {
+        case 'down':  ny += d; break;
+        case 'up':    ny -= d; break;
+        case 'left':  nx -= d; break;
+        case 'right': nx += d; break;
+      }
+      this._setTranslate(el, nx, ny);
+      // 同步属性面板
+      if (els.propTopVal) els.propTopVal.value = Math.round(nx);
+      if (els.propLeftVal) els.propLeftVal.value = Math.round(ny);
+      syncFromFrame(); renderPreview();
+      const dirText = {down:'向下',up:'向上',left:'向左',right:'向右'}[cmd.direction];
+      addHistory('语音移动: ' + dirText + ' ' + Math.round(cmd.distance) + 'px');
+      showToast('✅ 已' + dirText + '移动 ' + Math.round(cmd.distance) + 'px', 'success');
+    },
+
+    doColor: function(cmd) {
+      const el = currentEl || this.findElement(cmd.element);
+      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改颜色: ' + cmd.color, currentHtml);
+      if (el !== currentEl) selectElement(el);
+      updateStyle('color', cmd.color);
+      showToast('✅ 颜色已改为 ' + cmd.color, 'success');
+    },
+
+    doBgColor: function(cmd) {
+      const el = currentEl || this.findElement(cmd.element);
+      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改背景色: ' + cmd.color, currentHtml);
+      if (el !== currentEl) selectElement(el);
+      updateStyle('backgroundColor', cmd.color);
+      showToast('✅ 背景色已改为 ' + cmd.color, 'success');
+    },
+
+    doFontSize: function(cmd) {
+      const el = currentEl || this.findElement(cmd.element);
+      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改字号: ' + cmd.size, currentHtml);
+      if (el !== currentEl) selectElement(el);
+      updateStyle('fontSize', cmd.size);
+      showToast('✅ 字号已改为 ' + cmd.size, 'success');
+    },
+
+    doBold: function(cmd) {
+      const el = currentEl || this.findElement(cmd.element);
+      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo(cmd.bold ? '语音加粗' : '语音取消加粗', currentHtml);
+      if (el !== currentEl) selectElement(el);
+      updateStyle('fontWeight', cmd.bold ? '700' : '400');
+      showToast('✅ ' + (cmd.bold ? '加粗' : '取消加粗'), 'success');
+    },
+
+    doSelect: function(cmd) {
+      const el = this.findElement(cmd.keyword);
+      if (!el) { showToast('未找到包含 "' + cmd.keyword + '" 的元素', 'error'); return; }
+      selectElement(el);
+      showToast('✅ 已选中 "' + cmd.keyword + '"', 'success');
+      // 自动滚动到视图中
+      el.scrollIntoView({ behavior:'smooth', block:'center' });
+    },
+
+    _getTranslate: function(el) {
+      const t = el.style.transform;
+      const m = t.match(/translate\(([-\d.]+)px\s*,?\s*([-\d.]+)px\)/);
+      return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0, 0];
+    },
+    _setTranslate: function(el, x, y) {
+      if (x === 0 && y === 0) el.style.transform = '';
+      else el.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
+    }
+  };
+
+  /* ═══════════════════════════════════════════════════════════════
+     语音帮助面板渲染
+  ═══════════════════════════════════════════════════════════════ */
+
+  function renderVoiceHelp() {
+    const container = document.getElementById('voice-command-list');
+    if (!container) return;
+    const cmds = [
+      {icon:'fa-text', title:'替换文字', desc:'将选中元素的文字内容替换为新内容', example:'把讨论稿改成初稿', tag:'replace'},
+      {icon:'fa-arrows-up-down-left-right', title:'移动元素', desc:'将元素向指定方向移动指定距离', example:'把讨论稿向下移1厘米', tag:'move'},
+      {icon:'fa-palette', title:'改颜色', desc:'修改元素文字颜色为指定颜色', example:'把标题改成红色', tag:'style'},
+      {icon:'fa-fill-drip', title:'改背景色', desc:'修改元素背景色为指定颜色', example:'把标题背景改成蓝色', tag:'style'},
+      {icon:'fa-text-height', title:'改字号', desc:'将元素字号调整为指定大小', example:'把日期改成14号字', tag:'style'},
+      {icon:'fa-bold', title:'加粗', desc:'切换元素加粗状态', example:'把标题加粗', tag:'style'},
+      {icon:'fa-mouse-pointer', title:'选中元素', desc:'通过文字内容查找并选中元素', example:'选中讨论稿', tag:'action'},
+      {icon:'fa-rotate-left', title:'撤销', desc:'撤销上一步操作', example:'撤销', tag:'action'},
+    ];
+    container.innerHTML = cmds.map(c => `
+      <div class="voice-cmd-card">
+        <div class="voice-cmd-icon" style="background:rgba(99,102,241,.1);color:var(--accent-hover);">
+          <i class="fas ${c.icon}"></i>
+        </div>
+        <div class="voice-cmd-text">
+          <div class="cmd-title">${c.title} <span class="voice-cmd-tag ${c.tag}">${c.tag}</span></div>
+          <div class="cmd-desc">${c.desc}</div>
+          <span class="voice-cmd-example">💬 "${c.example}"</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     绑定语音相关事件
+  ═══════════════════════════════════════════════════════════════ */
+
+  function bindVoiceEvents() {
+    const btnVoice = document.getElementById('btn-voice');
+    const btnCloseHelp = document.getElementById('btn-close-voice-help');
+    const btnHelpClose = document.getElementById('btn-voice-help-close');
+    const modalHelp = document.getElementById('voice-help-modal');
+
+    if (btnVoice) {
+      // 长按显示帮助
+      let pressTimer = null;
+      btnVoice.addEventListener('mousedown', () => {
+        pressTimer = setTimeout(() => {
+          renderVoiceHelp();
+          document.getElementById('overlay').classList.add('show');
+          modalHelp.classList.add('show');
+        }, 800);
+      });
+      btnVoice.addEventListener('mouseup', () => clearTimeout(pressTimer));
+      btnVoice.addEventListener('mouseleave', () => clearTimeout(pressTimer));
+      // 点击切换语音
+      btnVoice.addEventListener('click', (e) => {
+        // 如果是长按触发的则不执行click
+        if (pressTimer) clearTimeout(pressTimer);
+        if (!VoiceEngine) {
+          showToast('当前浏览器不支持语音识别，请使用 Chrome/Safari/Edge', 'error');
+          return;
+        }
+        VoiceEngine.toggle();
+      });
+    }
+
+    // 键盘快捷键 Ctrl+Shift+V
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+        e.preventDefault();
+        if (VoiceEngine) VoiceEngine.toggle();
+        else showToast('当前浏览器不支持语音识别', 'error');
+      }
+      // ESC 停止录音
+      if (e.key === 'Escape' && VoiceEngine && VoiceEngine.isListening()) {
+        VoiceEngine.stop();
+        showToast('语音输入已停止', 'info');
+      }
+    });
+
+    // 帮助面板关闭
+    [btnCloseHelp, btnHelpClose].forEach(btn => {
+      if (btn) btn.addEventListener('click', () => {
+        document.getElementById('overlay').classList.remove('show');
+        modalHelp.classList.remove('show');
+      });
+    });
+
+    // 点击遮罩关闭帮助
+    const overlay = document.getElementById('overlay');
+    overlay.addEventListener('click', () => {
+      modalHelp.classList.remove('show');
+      // 只有没有html-modal的时候才移除overlay
+      if (!document.getElementById('html-modal').classList.contains('show')) {
+        overlay.classList.remove('show');
+      }
+    });
+  }
+
   /* ── 启动 ── */
   init();
+  bindVoiceEvents();
+  if (VoiceEngine) VoiceEngine.init();
 })();

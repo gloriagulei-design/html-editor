@@ -157,6 +157,30 @@
     }
     .btn-danger:hover { background: rgba(248,113,113,0.25); }
     .btn-sm { padding: 4px 10px; font-size: 11px; }
+    /* 语音按钮 */
+    .btn-voice {
+      background: rgba(99,102,241,0.1);
+      color: #a5b4fc;
+      border: 1px solid rgba(99,102,241,0.3);
+      transition: all 0.3s ease;
+    }
+    .btn-voice:hover { background: rgba(99,102,241,0.2); color: #c7d2fe; border-color: rgba(99,102,241,0.5); }
+    .btn-voice.active {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: #fff;
+      border-color: #ef4444;
+      box-shadow: 0 0 0 4px rgba(239,68,68,0.2);
+      animation: pulse-voice 1.5s ease-in-out infinite;
+    }
+    .btn-voice.active i { animation: mic-pulse 1s ease-in-out infinite; }
+    @keyframes pulse-voice {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(239,68,68,0.2); }
+      50% { box-shadow: 0 0 0 10px rgba(239,68,68,0.05); }
+    }
+    @keyframes mic-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.15); }
+    }
 
     /* ────────────── Main Layout ────────────── */
     .app-main {
@@ -605,6 +629,85 @@
     .nudge-input:focus { border-color: var(--accent); }
     .nudge-input::-webkit-inner-spin-button,
     .nudge-input::-webkit-outer-spin-button { opacity: 1; height: 16px; }
+
+    /* ── 撤销/重做 按钮样式 ── */
+    .undo-bar {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .undo-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex: 1;
+      justify-content: center;
+    }
+    .undo-btn:hover:not(:disabled) {
+      background: var(--surface-light);
+      color: var(--text);
+      border-color: var(--border-light);
+    }
+    .undo-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .undo-btn.active-undo {
+      color: var(--accent-hover);
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.08);
+    }
+    .undo-divider {
+      width: 1px; height: 18px;
+      background: var(--border);
+    }
+    .undo-count {
+      min-width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface-light);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 11px; font-weight: 700;
+      color: var(--text-muted);
+    }
+    .undo-hint {
+      display: flex; align-items: center; gap: 6px;
+      margin-top: 8px;
+      font-size: 10px; color: var(--text-dim);
+    }
+    .undo-hint i { font-size: 9px; }
+
+    /* ── 历史记录列表 ── */
+    .history-list {
+      max-height: 220px; overflow: auto;
+      padding: 4px 0;
+    }
+    .history-node {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 16px;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-left: 2px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .history-node:hover {
+      background: rgba(99,102,241,0.04);
+      border-left-color: var(--accent);
+    }
+    .history-node.current {
+      background: rgba(99,102,241,0.10);
+      border-left-color: var(--accent);
+      color: var(--text);
+      font-weight: 500;
+    }
+    .history-node i { font-size: 9px; width: 14px; text-align: center; }
+    .history-node .h-time { margin-left: auto; font-size: 9px; color: var(--text-dim); }
   </style>
 </head>
 
@@ -639,8 +742,19 @@
         <button class="btn btn-ghost btn-sm" id="btn-new">
           <i class="fas fa-file"></i> 新建
         </button>
+        <button class="btn btn-ghost btn-sm" id="btn-undo" title="撤销 (Ctrl+Z)">
+          <i class="fas fa-rotate-left"></i>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-redo" title="重做 (Ctrl+Shift+Z)">
+          <i class="fas fa-rotate-right"></i>
+        </button>
+        <div style="width:1px; height:20px; background:var(--border); margin:0 4px;"></div>
         <button class="btn btn-ghost btn-sm" id="btn-reset">
           <i class="fas fa-rotate-left"></i> 重置
+        </button>
+        <div style="width:1px; height:20px; background:var(--border); margin:0 4px;"></div>
+        <button class="btn btn-voice" id="btn-voice" title="语音控制">
+          <i class="fas fa-microphone"></i> 语音
         </button>
         <div style="width:1px; height:20px; background:var(--border); margin:0 4px;"></div>
         <button class="btn btn-primary" id="btn-download">
@@ -673,7 +787,26 @@
           </div>
         </div>
 
-        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden; border-top:1px solid var(--border);">
+        <!-- 撤销/重做 快捷区 -->
+        <div style="padding:12px 16px; border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
+          <div class="undo-bar">
+            <button class="undo-btn" id="btn-undo-sidebar" title="撤销 (Ctrl+Z)">
+              <i class="fas fa-rotate-left"></i> 撤销
+            </button>
+            <span class="undo-divider"></span>
+            <button class="undo-btn" id="btn-redo-sidebar" title="重做 (Ctrl+Shift+Z)">
+              <i class="fas fa-rotate-right"></i> 重做
+            </button>
+            <span class="undo-divider"></span>
+            <span class="undo-count" id="undo-count">0</span>
+          </div>
+          <div class="undo-hint">
+            <i class="fas fa-info-circle"></i>
+            <span>点击可逐步回退，最多保留 50 步</span>
+          </div>
+        </div>
+
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
           <div class="sidebar-header">
             <i class="fas fa-sitemap"></i> 页面结构
             <span class="badge" id="element-count" style="margin-left:auto;">0</span>
@@ -757,30 +890,30 @@
                   <option value="sticky">粘性定位 (sticky)</option>
                 </select>
               </div>
-              <!-- 位置微调 -->
+              <!-- 位置微调（使用 transform: translate）-->
               <div class="prop-group">
                 <div class="prop-label" style="display:flex;align-items:center;gap:8px;">
                   <span>位置微调（px）</span>
                   <span style="font-size:10px;color:var(--text-dim);font-weight:400;">点击箭头精确调整</span>
                 </div>
                 <div class="position-nudge-grid">
-                  <!-- Top Row -->
+                  <!-- X偏移 Row -->
                   <div class="nudge-row">
-                    <span class="nudge-label">上 Top</span>
-                    <button class="nudge-btn" data-dir="top" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
-                    <button class="nudge-btn" data-dir="top" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
-                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="auto">
-                    <button class="nudge-btn" data-dir="top" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
-                    <button class="nudge-btn" data-dir="top" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
+                    <span class="nudge-label">X 偏移</span>
+                    <button class="nudge-btn" data-dir="x" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
+                    <button class="nudge-btn" data-dir="x" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
+                    <input type="number" class="nudge-input" id="prop-top-val" placeholder="0">
+                    <button class="nudge-btn" data-dir="x" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
+                    <button class="nudge-btn" data-dir="x" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
                   </div>
-                  <!-- Left Row -->
+                  <!-- Y偏移 Row -->
                   <div class="nudge-row">
-                    <span class="nudge-label">左 Left</span>
-                    <button class="nudge-btn" data-dir="left" data-delta="-10" title="向左10px"><i class="fas fa-chevron-left"></i></button>
-                    <button class="nudge-btn" data-dir="left" data-delta="-1" title="向左1px"><i class="fas fa-angle-left"></i></button>
-                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="auto">
-                    <button class="nudge-btn" data-dir="left" data-delta="1" title="向右1px"><i class="fas fa-angle-right"></i></button>
-                    <button class="nudge-btn" data-dir="left" data-delta="10" title="向右10px"><i class="fas fa-chevron-right"></i></button>
+                    <span class="nudge-label">Y 偏移</span>
+                    <button class="nudge-btn" data-dir="y" data-delta="-10" title="向上10px"><i class="fas fa-chevron-up"></i></button>
+                    <button class="nudge-btn" data-dir="y" data-delta="-1" title="向上1px"><i class="fas fa-angle-up"></i></button>
+                    <input type="number" class="nudge-input" id="prop-left-val" placeholder="0">
+                    <button class="nudge-btn" data-dir="y" data-delta="1" title="向下1px"><i class="fas fa-angle-down"></i></button>
+                    <button class="nudge-btn" data-dir="y" data-delta="10" title="向下10px"><i class="fas fa-chevron-down"></i></button>
                   </div>
                 </div>
               </div>
@@ -879,6 +1012,24 @@
     <!-- Toast -->
     <div class="toast-container" id="toast-container"></div>
 
+    <!-- 语音状态提示 -->
+    <div id="voice-status" style="
+      position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px);
+      z-index:3000; display:none; align-items:center; gap:12px;
+      padding:12px 24px; background:var(--surface); border:1px solid var(--border);
+      border-radius:var(--radius-lg); box-shadow:var(--shadow-lg);
+      font-size:14px; color:var(--text); max-width:80vw;
+      transition:transform 0.3s ease, opacity 0.3s ease; opacity:0;
+    ">
+      <div style="width:10px;height:10px;border-radius:50%;background:#ef4444;animation:voice-dot 1.2s ease-in-out infinite;"></div>
+      <span id="voice-status-text">正在聆听...</span>
+      <span style="color:var(--text-dim);font-size:11px;">按 ESC 或再次点击语音按钮停止</span>
+    </div>
+    <style>
+      #voice-status.show { display:flex; opacity:1; transform:translateX(-50%) translateY(0); }
+      @keyframes voice-dot { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:.5;transform:scale(.8);} }
+    </style>
+
     <!-- Overlay + Modal -->
     <div class="overlay" id="overlay"></div>
     <div class="modal" id="html-modal">
@@ -894,6 +1045,59 @@
         <button class="btn btn-primary" id="btn-modal-ok">保存</button>
       </div>
     </div>
+
+    <!-- 语音指令帮助 Modal -->
+    <div class="modal" id="voice-help-modal">
+      <div class="modal-header">
+        <h3><i class="fas fa-microphone-lines" style="color:var(--accent);"></i> 语音控制指令</h3>
+        <button class="btn-icon" id="btn-close-voice-help"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="modal-body" style="padding:0;">
+        <div style="padding:16px 18px;border-bottom:1px solid var(--border);">
+          <p style="margin:0;font-size:12px;color:var(--text-muted);line-height:1.6;">
+            点击语音按钮或按 <kbd style="background:var(--surface-light);padding:2px 8px;border-radius:4px;border:1px solid var(--border);font-family:monospace;">Ctrl+Shift+V</kbd> 开始语音输入，说出以下格式指令：
+          </p>
+        </div>
+        <div id="voice-command-list" style="max-height:400px;overflow:auto;padding:12px 0;">
+          <!-- JS 注入指令卡片 -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-sm" id="btn-voice-help-close">关闭</button>
+      </div>
+    </div>
+    <style>
+      .voice-cmd-card {
+        display:flex; align-items:flex-start; gap:12px;
+        padding:12px 18px; border-bottom:1px solid var(--border);
+        transition:background 0.15s;
+      }
+      .voice-cmd-card:hover { background:rgba(99,102,241,0.04); }
+      .voice-cmd-card:last-child { border-bottom:none; }
+      .voice-cmd-icon {
+        width:36px;height:36px;border-radius:var(--radius-sm);
+        display:flex;align-items:center;justify-content:center;
+        font-size:14px; flex-shrink:0;
+      }
+      .voice-cmd-text { flex:1; }
+      .voice-cmd-text .cmd-title { font-weight:600;font-size:13px;margin-bottom:3px;color:var(--text); }
+      .voice-cmd-text .cmd-desc { font-size:11px;color:var(--text-muted);line-height:1.5; }
+      .voice-cmd-example {
+        display:inline-block; margin-top:4px;
+        background:var(--bg); border:1px solid var(--border);
+        border-radius:var(--radius-sm); padding:3px 10px;
+        font-size:11px; color:var(--accent-hover);
+        font-family:'SF Mono','Fira Code',monospace;
+      }
+      .voice-cmd-tag {
+        font-size:9px; padding:2px 8px; border-radius:999px;
+        font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+      }
+      .voice-cmd-tag.replace { background:rgba(52,211,153,.12); color:var(--success); }
+      .voice-cmd-tag.move { background:rgba(99,102,241,.12); color:var(--accent-hover); }
+      .voice-cmd-tag.style { background:rgba(251,191,36,.12); color:var(--warning); }
+      .voice-cmd-tag.action { background:rgba(248,113,113,.12); color:var(--danger); }
+    </style>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
