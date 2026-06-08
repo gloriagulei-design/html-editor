@@ -78,27 +78,59 @@ async function getBrowser() {
  * Step4: pdf-lib 验证页数
  */
 async function convertHtmlToPdf(htmlContent) {
-  const browser = await getBrowser();
-  const page = await browser.newPage();
+  let browser;
+  try {
+    browser = await getBrowser();
+  } catch (launchErr) {
+    console.error('❌ Chromium 启动失败:', launchErr.message);
+    throw new Error('Chromium 浏览器启动失败: ' + launchErr.message);
+  }
+
+  let page;
+  try {
+    page = await browser.newPage();
+  } catch (pageErr) {
+    console.error('❌ 创建页面失败:', pageErr.message);
+    // 浏览器可能已崩溃，清除引用让下次重新启动
+    browserInstance = null;
+    throw new Error('创建渲染页面失败，请重试: ' + pageErr.message);
+  }
 
   try {
     await page.setViewport(VIEWPORT);
 
     // Step0: 渲染页面
-    await page.setContent(htmlContent, {
-      waitUntil: 'networkidle0',
-      timeout: TIMEOUTS.pageLoad
-    });
+    try {
+      await page.setContent(htmlContent, {
+        waitUntil: 'networkidle0',
+        timeout: TIMEOUTS.pageLoad
+      });
+    } catch (loadErr) {
+      // networkidle0 超时时尝试降级为 domcontentloaded
+      console.warn('⚠️ networkidle0 超时，降级为 domcontentloaded:', loadErr.message);
+      try {
+        await page.setContent(htmlContent, {
+          waitUntil: 'domcontentloaded',
+          timeout: TIMEOUTS.pageLoad
+        });
+      } catch (fallbackErr) {
+        throw new Error('页面渲染超时，请检查 HTML 内容是否包含无法加载的资源');
+      }
+    }
 
     // 等 canvas 图表完成（ECharts 等）
     const hasCanvas = await page.evaluate(() =>
       document.querySelectorAll('canvas').length
     );
     if (hasCanvas > 0) {
-      await page.waitForFunction(
-        () => Array.from(document.querySelectorAll('canvas')).every(c => c.width > 0),
-        { timeout: TIMEOUTS.canvasWait }
-      );
+      try {
+        await page.waitForFunction(
+          () => Array.from(document.querySelectorAll('canvas')).every(c => c.width > 0),
+          { timeout: TIMEOUTS.canvasWait }
+        );
+      } catch (_) {
+        console.warn('⚠️ Canvas 图表等待超时，继续生成 PDF');
+      }
     }
     await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
 

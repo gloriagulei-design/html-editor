@@ -156,7 +156,7 @@
       } else {
         currentEl.style.position = '';
       }
-      syncFromFrame(); renderPreview(); addHistory(`修改定位: ${val || 'static'}`);
+      syncFromFrame(); refreshAfterEdit(); addHistory(`修改定位: ${val || 'static'}`);
     });
 
     // 位置微调按钮（使用 transform: translate）
@@ -227,7 +227,7 @@
       if (!currentEl) return;
       pushUndo('修改自定义CSS', currentHtml);
       currentEl.setAttribute('style', els.propCustomCss.value);
-      renderPreview(); addHistory('修改自定义CSS');
+      refreshAfterEdit(); addHistory('修改自定义CSS');
     });
 
     /* 对齐 */
@@ -244,25 +244,25 @@
       if (!currentEl) return;
       pushUndo('修改 href', currentHtml);
       currentEl.setAttribute('href', els.propHref.value);
-      renderPreview(); addHistory('修改 href');
+      refreshAfterEdit(); addHistory('修改 href');
     });
     els.propSrc.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 src', currentHtml);
       currentEl.setAttribute('src', els.propSrc.value);
-      renderPreview(); addHistory('修改 src');
+      refreshAfterEdit(); addHistory('修改 src');
     });
     els.propId.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 ID', currentHtml);
       currentEl.setAttribute('id', els.propId.value);
-      renderPreview(); addHistory('修改 ID');
+      refreshAfterEdit(); addHistory('修改 ID');
     });
     els.propClass.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 Class', currentHtml);
       currentEl.setAttribute('class', els.propClass.value);
-      renderPreview(); addHistory('修改 Class');
+      refreshAfterEdit(); addHistory('修改 Class');
     });
 
     /* 工具栏 */
@@ -358,36 +358,7 @@
     if (!style) {
       style = doc.createElement('style');
       style.id = 'html-editor-injected';
-      style.textContent = `
-        .html-editor-selected {
-          outline: 2.5px solid #6366f1 !important;
-          outline-offset: 2px !important;
-          cursor: move !important;
-          background: rgba(99,102,241,0.05) !important;
-        }
-        .html-editor-hover {
-          outline: 1.5px dashed rgba(99,102,241,0.5) !important;
-          outline-offset: 1px !important;
-          cursor: text !important;
-        }
-        .html-editor-dragging {
-          outline: 3px solid #10b981 !important;
-          outline-offset: 2px !important;
-          opacity: 0.85 !important;
-          z-index: 99999 !important;
-          cursor: grabbing !important;
-          box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
-        }
-        .html-editor-hover::after {
-          content: attr(data-tag);
-          position: absolute; top: -18px; left: 0;
-          background: #6366f1; color: #fff; font-size: 10px;
-          padding: 1px 6px; border-radius: 4px; pointer-events: none; z-index: 999999; white-space: nowrap;
-        }
-        body { position: relative; }
-        * { position: relative; transition: background-color 0.15s; }
-        body *:hover { background-color: rgba(99,102,241,0.02); }
-      `;
+      style.textContent = EDITOR_INJECTED_CSS;
       if (doc.head) doc.head.appendChild(style);
     }
 
@@ -605,32 +576,94 @@
     els.propClass.value = el.className || '';
   }
 
+  /* ── 编辑器注入样式（共享，onFrameLoad 和 refreshAfterEdit 都用） ── */
+  const EDITOR_INJECTED_CSS = `
+    .html-editor-selected {
+      outline: 2.5px solid #6366f1 !important;
+      outline-offset: 2px !important;
+      cursor: move !important;
+      background: rgba(99,102,241,0.05) !important;
+    }
+    .html-editor-hover {
+      outline: 1.5px dashed rgba(99,102,241,0.5) !important;
+      outline-offset: 1px !important;
+      cursor: text !important;
+    }
+    .html-editor-dragging {
+      outline: 3px solid #10b981 !important;
+      outline-offset: 2px !important;
+      opacity: 0.85 !important;
+      z-index: 99999 !important;
+      cursor: grabbing !important;
+      box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
+    }
+    .html-editor-hover::after {
+      content: attr(data-tag);
+      position: absolute; top: -18px; left: 0;
+      background: #6366f1; color: #fff; font-size: 10px;
+      padding: 1px 6px; border-radius: 4px; pointer-events: none; z-index: 999999; white-space: nowrap;
+    }
+    body { position: relative; }
+    * { position: relative; transition: background-color 0.15s; }
+    body *:hover { background-color: rgba(99,102,241,0.02); }
+  `;
+
+  /* ── 编辑后刷新（不重写 iframe，保留 currentEl 引用） ── */
+  function refreshAfterEdit() {
+    syncFromFrame();                 // 同步 HTML 字符串（会移除注入样式和编辑器 class）
+    // 重新注入编辑器交互样式
+    const doc = els.previewFrame.contentDocument;
+    if (doc && doc.head) {
+      let style = doc.getElementById('html-editor-injected');
+      if (!style) {
+        style = doc.createElement('style');
+        style.id = 'html-editor-injected';
+        doc.head.appendChild(style);
+      }
+      style.textContent = EDITOR_INJECTED_CSS;
+    }
+    // 重新添加 data-tag 属性（事件监听器还在，不需要重新绑定）
+    if (doc && doc.body) {
+      doc.querySelectorAll('*').forEach(el => {
+        if (el.id !== 'html-editor-injected') {
+          el.setAttribute('data-tag', el.tagName.toLowerCase());
+        }
+      });
+    }
+    // 重新应用选中样式
+    if (currentEl) {
+      currentEl.classList.add('html-editor-selected');
+    }
+    buildElementTree();              // 更新元素树
+    updateCodePanel();               // 更新代码面板
+  }
+
   function updateStyle(prop, val) {
     if (!currentEl || !val) return;
     pushUndo(`修改样式: ${prop}`, currentHtml);
     currentEl.style[prop] = val;
-    syncFromFrame(); renderPreview(); addHistory(`修改样式: ${prop}`);
+    refreshAfterEdit(); addHistory(`修改样式: ${prop}`);
   }
 
   function updateTextContent() {
     if (!currentEl) return;
     pushUndo('修改文本', currentHtml);
     currentEl.textContent = els.propTextContent.value;
-    syncFromFrame(); renderPreview(); buildElementTree(); addHistory('修改文本');
+    refreshAfterEdit(); addHistory('修改文本');
   }
 
   function updateHtmlContent() {
     if (!currentEl) return;
     pushUndo('修改 HTML 内容', currentHtml);
     currentEl.innerHTML = els.propHtmlContent.value;
-    syncFromFrame(); renderPreview(); addHistory('修改 HTML 内容');
+    refreshAfterEdit(); addHistory('修改 HTML 内容');
   }
 
   function deleteCurrentElement() {
     if (!currentEl) return;
     if (!confirm('确定删除此元素？')) return;
     pushUndo('删除元素', currentHtml);
-    currentEl.remove(); syncFromFrame(); renderPreview();
+    currentEl.remove(); syncFromFrame();
     buildElementTree(); updateCodePanel(); closePropertiesPanel();
     addHistory('删除元素'); showToast('元素已删除', 'success');
   }
@@ -651,7 +684,7 @@
       pushUndo('修改 HTML 源码', currentHtml);
       currentEl.innerHTML = els.modalTextarea.value;
       els.propHtmlContent.value = currentEl.innerHTML;
-      syncFromFrame(); renderPreview(); addHistory('修改 HTML 源码');
+      refreshAfterEdit(); addHistory('修改 HTML 源码');
       showToast('HTML 源码已更新', 'success');
     }
     closeHtmlModal();
@@ -942,21 +975,48 @@ ${currentHtml}
 </html>`;
       }
 
-      const response = await fetch('/api/html-to-pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          html: fullHtml,
-          filename: currentFileName
-        })
-      });
+      // 带超时的 fetch 请求
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+
+      let response;
+      try {
+        response = await fetch('/api/html-to-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            html: fullHtml,
+            filename: currentFileName
+          }),
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr.name === 'AbortError') {
+          throw new Error('PDF 生成超时（60秒），请检查内容是否过大');
+        }
+        throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
+      }
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errData = await response.json().catch(() => ({ error: '未知错误' }));
-        throw new Error(errData.error || `HTTP ${response.status}`);
+        let errMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {
+          // 非 JSON 响应，使用默认错误消息
+        }
+        throw new Error(errMsg);
       }
 
       const blob = await response.blob();
+
+      // 验证返回的是 PDF 而非错误
+      if (blob.size < 100 || blob.type === 'application/json') {
+        throw new Error('PDF 生成结果异常，文件过小或格式错误');
+      }
+
       const pdfName = currentFileName.replace(/\.html?$/i, '') + '.pdf';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1415,7 +1475,7 @@ ${currentHtml}
       pushUndo('语音替换: ' + cmd.target + ' → ' + cmd.replacement, currentHtml);
       selectElement(el);
       el.textContent = cmd.replacement;
-      syncFromFrame(); renderPreview(); buildElementTree();
+      refreshAfterEdit();
       addHistory('语音替换: ' + cmd.target + ' → ' + cmd.replacement);
       showToast('✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"', 'success');
     },
@@ -1438,7 +1498,8 @@ ${currentHtml}
       // 同步属性面板
       if (els.propTopVal) els.propTopVal.value = Math.round(nx);
       if (els.propLeftVal) els.propLeftVal.value = Math.round(ny);
-      syncFromFrame(); renderPreview();
+      syncFromFrame();
+      if (currentEl) currentEl.classList.add('html-editor-selected');
       const dirText = {down:'向下',up:'向上',left:'向左',right:'向右'}[cmd.direction];
       addHistory('语音移动: ' + dirText + ' ' + Math.round(cmd.distance) + 'px');
       showToast('✅ 已' + dirText + '移动 ' + Math.round(cmd.distance) + 'px', 'success');
