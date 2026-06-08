@@ -13,6 +13,12 @@
   let isDragging    = false;
   const dragState   = { active: false, el: null, offsetX: 0, offsetY: 0, originalPosition: '', originalTop: '', originalLeft: '' };
 
+  /* ── 撤销/重做 状态 ── */
+  let undoStack = [];
+  let redoStack = [];
+  let isUndoing = false; // 标记正在执行撤销，避免记录
+  const MAX_UNDO = 50; // 最大保留50步历史
+
   /* ── DOM 缓存 ── */
   const $  = s => document.querySelector(s);
   const $$ = s => Array.from(document.querySelectorAll(s));
@@ -89,6 +95,7 @@
   function init() {
     bindEvents();
     loadDefaultContent();
+    updateUndoUI();
     showToast('HTML 可视化编辑器已就绪，拖拽文件或双击文字即可编辑', 'success');
   }
 
@@ -142,6 +149,7 @@
     els.propPosition.addEventListener('change', () => {
       const val = els.propPosition.value;
       if (!currentEl) return;
+      pushUndo(`修改定位: ${val || 'static'}`, currentHtml);
       if (val) {
         currentEl.style.position = val;
       } else {
@@ -169,6 +177,7 @@
         if (!currentEl) return;
         const dir = btn.dataset.dir;
         const delta = parseInt(btn.dataset.delta, 10);
+        pushUndo(`微调 ${dir === 'x' ? '水平' : '垂直'}: ${delta > 0 ? '+' : ''}${delta}px`, currentHtml);
         const [tx, ty] = getTranslateValues(currentEl);
         if (dir === 'x') {
           const newX = tx + delta;
@@ -186,6 +195,7 @@
     // 位置输入框回车确认
     els.propTopVal.addEventListener('change', () => {
       if (!currentEl) return;
+      pushUndo('设置 X 偏移', currentHtml);
       const val = els.propTopVal.value;
       const [, ty] = getTranslateValues(currentEl);
       const newX = val === '' ? 0 : parseFloat(val);
@@ -194,6 +204,7 @@
     });
     els.propLeftVal.addEventListener('change', () => {
       if (!currentEl) return;
+      pushUndo('设置 Y 偏移', currentHtml);
       const val = els.propLeftVal.value;
       const [tx] = getTranslateValues(currentEl);
       const newY = val === '' ? 0 : parseFloat(val);
@@ -213,6 +224,7 @@
     els.propRadius   .addEventListener('input', () => updateStyle('borderRadius', els.propRadius.value));
     els.propCustomCss.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改自定义CSS', currentHtml);
       currentEl.setAttribute('style', els.propCustomCss.value);
       renderPreview(); addHistory('修改自定义CSS');
     });
@@ -220,6 +232,7 @@
     /* 对齐 */
     $$('#prop-align .btn-icon').forEach(btn =>
       btn.addEventListener('click', () => {
+        pushUndo('修改对齐方式', currentHtml);
         updateStyle('textAlign', btn.dataset.value);
         $$('#prop-align .btn-icon').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
@@ -228,21 +241,25 @@
     /* 属性改动 */
     els.propHref.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 href', currentHtml);
       currentEl.setAttribute('href', els.propHref.value);
       renderPreview(); addHistory('修改 href');
     });
     els.propSrc.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 src', currentHtml);
       currentEl.setAttribute('src', els.propSrc.value);
       renderPreview(); addHistory('修改 src');
     });
     els.propId.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 ID', currentHtml);
       currentEl.setAttribute('id', els.propId.value);
       renderPreview(); addHistory('修改 ID');
     });
     els.propClass.addEventListener('input', () => {
       if (!currentEl) return;
+      pushUndo('修改 Class', currentHtml);
       currentEl.setAttribute('class', els.propClass.value);
       renderPreview(); addHistory('修改 Class');
     });
@@ -255,6 +272,30 @@
     els.btnFormatCode.addEventListener('click', formatCode);
     els.btnDeleteEl  .addEventListener('click', deleteCurrentElement);
     els.btnEditHtml  .addEventListener('click', openHtmlModal);
+
+    /* 撤销/重做按钮 */
+    const btnUndo = $('#btn-undo');
+    const btnRedo = $('#btn-redo');
+    const btnUndoSidebar = $('#btn-undo-sidebar');
+    const btnRedoSidebar = $('#btn-redo-sidebar');
+    if (btnUndo) btnUndo.addEventListener('click', undo);
+    if (btnRedo) btnRedo.addEventListener('click', redo);
+    if (btnUndoSidebar) btnUndoSidebar.addEventListener('click', undo);
+    if (btnRedoSidebar) btnRedoSidebar.addEventListener('click', redo);
+
+    /* 键盘快捷键 Ctrl+Z / Ctrl+Shift+Z */
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' || e.key === 'Z') {
+          e.preventDefault();
+          if (e.shiftKey) { redo(); }
+          else { undo(); }
+        } else if (e.key === 'y' || e.key === 'Y') {
+          e.preventDefault();
+          redo();
+        }
+      }
+    });
 
     /* 弹窗 */
     els.btnCloseModal .addEventListener('click', closeHtmlModal);
@@ -293,7 +334,8 @@
     els.fileSize.textContent = formatBytes(size || new Blob([html]).size);
     els.dropZone.style.display = 'none';
     els.fileInfo.classList.add('show');
-    editHistory = []; updateHistoryUI();
+    editHistory = []; undoStack = []; redoStack = [];
+    updateHistoryUI(); updateUndoUI();
     showToast(`已加载「${name}」`, 'success');
   }
 
@@ -430,6 +472,7 @@
       // 延迟重置，让click事件先触发完成选中状态同步
       setTimeout(() => {
         dragState.el = null;
+        pushUndo('拖拽移动元素', currentHtml);
         syncFromFrame();
         addHistory('拖拽移动元素');
         showToast('✅ 元素位置已更新', 'success');
@@ -458,6 +501,7 @@
       el.contentEditable = 'false';
       el.removeEventListener('blur', onBlur);
       el.removeEventListener('input', onInput);
+      pushUndo('编辑文本: ' + (el.textContent.trim().slice(0,20) || '[空]'), currentHtml);
       syncFromFrame(); buildElementTree(); updateCodePanel();
       addHistory('编辑文本: ' + (el.textContent.trim().slice(0,20) || '[空]'));
     };
@@ -561,18 +605,21 @@
 
   function updateStyle(prop, val) {
     if (!currentEl || !val) return;
+    pushUndo(`修改样式: ${prop}`, currentHtml);
     currentEl.style[prop] = val;
     syncFromFrame(); renderPreview(); addHistory(`修改样式: ${prop}`);
   }
 
   function updateTextContent() {
     if (!currentEl) return;
+    pushUndo('修改文本', currentHtml);
     currentEl.textContent = els.propTextContent.value;
     syncFromFrame(); renderPreview(); buildElementTree(); addHistory('修改文本');
   }
 
   function updateHtmlContent() {
     if (!currentEl) return;
+    pushUndo('修改 HTML 内容', currentHtml);
     currentEl.innerHTML = els.propHtmlContent.value;
     syncFromFrame(); renderPreview(); addHistory('修改 HTML 内容');
   }
@@ -580,6 +627,7 @@
   function deleteCurrentElement() {
     if (!currentEl) return;
     if (!confirm('确定删除此元素？')) return;
+    pushUndo('删除元素', currentHtml);
     currentEl.remove(); syncFromFrame(); renderPreview();
     buildElementTree(); updateCodePanel(); closePropertiesPanel();
     addHistory('删除元素'); showToast('元素已删除', 'success');
@@ -598,6 +646,7 @@
   }
   function saveModalHtml() {
     if (currentEl) {
+      pushUndo('修改 HTML 源码', currentHtml);
       currentEl.innerHTML = els.modalTextarea.value;
       els.propHtmlContent.value = currentEl.innerHTML;
       syncFromFrame(); renderPreview(); addHistory('修改 HTML 源码');
@@ -714,6 +763,7 @@
   }
 
   function formatCode() {
+    pushUndo('格式化代码', currentHtml);
     let out = '', indent = 0;
     const lines = currentHtml.replace(/>(\s*)</g, '>\n<').split('\n');
     for (const ln of lines) {
@@ -732,6 +782,120 @@
     editHistory.unshift({ action, time: new Date().toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) });
     if (editHistory.length > 30) editHistory.pop();
   }
+
+  /* ── 撤销/重做 核心系统 ── */
+
+  /**
+   * 用 DOMParser 把 currentHtml 解析为完整的 Document，
+   * 提取出 body 里面的第一个子节点（即 <body> 本身），
+   * 这样可以保留完整的结构信息用于快照恢复。
+   */
+  function parseHtmlToBody(html) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      // 返回 body 元素的 outerHTML，这样恢复时最完整
+      return { body: doc.body.outerHTML, full: html };
+    } catch (e) {
+      return { body: html, full: html };
+    }
+  }
+
+  /**
+   * 压入一个可以撤销的快照。
+   * @param {string} label - 人类可读的操作描述
+   * @param {string} bodyHtml - body 的 HTML（不含 head/style/script）
+   */
+  function pushUndo(label, bodyHtml) {
+    if (isUndoing) return; // 撤销过程中不记录
+    const snap = {
+      label: label,
+      body: bodyHtml || currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    };
+    undoStack.push(snap);
+    redoStack = []; // 新操作清空重做栈
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    updateUndoUI();
+    addHistory(label);
+  }
+
+  /**
+   * 撤销一步
+   */
+  function undo() {
+    if (undoStack.length === 0) { showToast('没有可撤销的操作', 'info'); return; }
+    isUndoing = true;
+    const lastSnap = undoStack.pop();
+    redoStack.push({
+      label: lastSnap.label,
+      body: currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    });
+    // 恢复状态
+    restoreFromSnapshot(lastSnap.body);
+    showToast(`↩ 已撤销: ${lastSnap.label}`, 'success');
+    updateUndoUI();
+    updateHistoryUI();
+    setTimeout(() => { isUndoing = false; }, 50);
+  }
+
+  /**
+   * 重做一步
+   */
+  function redo() {
+    if (redoStack.length === 0) { showToast('没有可重做的操作', 'info'); return; }
+    isUndoing = true;
+    const snap = redoStack.pop();
+    undoStack.push({
+      label: snap.label,
+      body: currentHtml,
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp: Date.now()
+    });
+    restoreFromSnapshot(snap.body);
+    showToast(`↪ 已重做: ${snap.label}`, 'success');
+    updateUndoUI();
+    updateHistoryUI();
+    setTimeout(() => { isUndoing = false; }, 50);
+  }
+
+  /**
+   * 从快照恢复当前 HTML 并重新渲染
+   */
+  function restoreFromSnapshot(html) {
+    currentHtml = html;
+    renderPreview();
+    buildElementTree();
+    updateCodePanel();
+    // 取消选中
+    currentEl = null;
+    const doc = els.previewFrame.contentDocument;
+    if (doc) doc.querySelectorAll('.html-editor-selected').forEach(e => e.classList.remove('html-editor-selected'));
+    closePropertiesPanel();
+  }
+
+  /**
+   * 更新撤销/重做按钮 UI 状态
+   */
+  function updateUndoUI() {
+    const undoBtn = $('#btn-undo');
+    const redoBtn = $('#btn-redo');
+    const undoSidebar = $('#btn-undo-sidebar');
+    const redoSidebar = $('#btn-redo-sidebar');
+    const countEl = $('#undo-count');
+
+    [undoBtn, undoSidebar].forEach(b => {
+      if (b) { b.disabled = undoStack.length === 0; }
+    });
+    [redoBtn, redoSidebar].forEach(b => {
+      if (b) { b.disabled = redoStack.length === 0; }
+    });
+    if (countEl) countEl.textContent = undoStack.length;
+  }
+
   function updateHistoryUI() { /* side effect: empty since no history-node DOM now, harmless */ }
 
   /* ── 导出 & 工具 ── */
@@ -750,7 +914,8 @@
     currentHtml = ''; currentEl = null;
     els.dropZone.style.display = null;
     els.fileInfo.classList.remove('show');
-    editHistory = []; updateHistoryUI();
+    editHistory = []; undoStack = []; redoStack = [];
+    updateHistoryUI(); updateUndoUI();
     loadDefaultContent();
     showToast('编辑器已重置', 'success');
   }
@@ -1151,7 +1316,7 @@
         case 'fontsize':this.doFontSize(cmd); break;
         case 'bold':    this.doBold(cmd); break;
         case 'select':  this.doSelect(cmd); break;
-        case 'undo':    /* 预留 */ showToast('撤销功能开发中', 'info'); break;
+        case 'undo':    undo(); break;
         default: showToast('未实现的命令类型: ' + cmd.type, 'error');
       }
     },
@@ -1179,6 +1344,7 @@
     doReplace: function(cmd) {
       const el = this.findElement(cmd.target);
       if (!el) { showToast('未找到 "' + cmd.target + '"', 'error'); return; }
+      pushUndo('语音替换: ' + cmd.target + ' → ' + cmd.replacement, currentHtml);
       selectElement(el);
       el.textContent = cmd.replacement;
       syncFromFrame(); renderPreview(); buildElementTree();
@@ -1189,6 +1355,7 @@
     doMove: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
       if (!el) { showToast('请先选中元素或说出"选中'+cmd.element+'"', 'error'); return; }
+      pushUndo('语音移动: ' + cmd.direction + ' ' + cmd.distance + 'px', currentHtml);
       if (el !== currentEl) selectElement(el);
       const [tx, ty] = this._getTranslate(el);
       let nx = tx, ny = ty;
@@ -1212,6 +1379,7 @@
     doColor: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
       if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改颜色: ' + cmd.color, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('color', cmd.color);
       showToast('✅ 颜色已改为 ' + cmd.color, 'success');
@@ -1220,6 +1388,7 @@
     doBgColor: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
       if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改背景色: ' + cmd.color, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('backgroundColor', cmd.color);
       showToast('✅ 背景色已改为 ' + cmd.color, 'success');
@@ -1228,6 +1397,7 @@
     doFontSize: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
       if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo('语音改字号: ' + cmd.size, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('fontSize', cmd.size);
       showToast('✅ 字号已改为 ' + cmd.size, 'success');
@@ -1236,6 +1406,7 @@
     doBold: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
       if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      pushUndo(cmd.bold ? '语音加粗' : '语音取消加粗', currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('fontWeight', cmd.bold ? '700' : '400');
       showToast('✅ ' + (cmd.bold ? '加粗' : '取消加粗'), 'success');

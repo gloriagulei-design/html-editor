@@ -629,6 +629,85 @@
     .nudge-input:focus { border-color: var(--accent); }
     .nudge-input::-webkit-inner-spin-button,
     .nudge-input::-webkit-outer-spin-button { opacity: 1; height: 16px; }
+
+    /* ── 撤销/重做 按钮样式 ── */
+    .undo-bar {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .undo-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex: 1;
+      justify-content: center;
+    }
+    .undo-btn:hover:not(:disabled) {
+      background: var(--surface-light);
+      color: var(--text);
+      border-color: var(--border-light);
+    }
+    .undo-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .undo-btn.active-undo {
+      color: var(--accent-hover);
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.08);
+    }
+    .undo-divider {
+      width: 1px; height: 18px;
+      background: var(--border);
+    }
+    .undo-count {
+      min-width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface-light);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 11px; font-weight: 700;
+      color: var(--text-muted);
+    }
+    .undo-hint {
+      display: flex; align-items: center; gap: 6px;
+      margin-top: 8px;
+      font-size: 10px; color: var(--text-dim);
+    }
+    .undo-hint i { font-size: 9px; }
+
+    /* ── 历史记录列表 ── */
+    .history-list {
+      max-height: 220px; overflow: auto;
+      padding: 4px 0;
+    }
+    .history-node {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 16px;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-left: 2px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .history-node:hover {
+      background: rgba(99,102,241,0.04);
+      border-left-color: var(--accent);
+    }
+    .history-node.current {
+      background: rgba(99,102,241,0.10);
+      border-left-color: var(--accent);
+      color: var(--text);
+      font-weight: 500;
+    }
+    .history-node i { font-size: 9px; width: 14px; text-align: center; }
+    .history-node .h-time { margin-left: auto; font-size: 9px; color: var(--text-dim); }
   </style>
 </head>
 
@@ -663,6 +742,13 @@
         <button class="btn btn-ghost btn-sm" id="btn-new">
           <i class="fas fa-file"></i> 新建
         </button>
+        <button class="btn btn-ghost btn-sm" id="btn-undo" title="撤销 (Ctrl+Z)">
+          <i class="fas fa-rotate-left"></i>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-redo" title="重做 (Ctrl+Shift+Z)">
+          <i class="fas fa-rotate-right"></i>
+        </button>
+        <div style="width:1px; height:20px; background:var(--border); margin:0 4px;"></div>
         <button class="btn btn-ghost btn-sm" id="btn-reset">
           <i class="fas fa-rotate-left"></i> 重置
         </button>
@@ -701,7 +787,26 @@
           </div>
         </div>
 
-        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden; border-top:1px solid var(--border);">
+        <!-- 撤销/重做 快捷区 -->
+        <div style="padding:12px 16px; border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
+          <div class="undo-bar">
+            <button class="undo-btn" id="btn-undo-sidebar" title="撤销 (Ctrl+Z)">
+              <i class="fas fa-rotate-left"></i> 撤销
+            </button>
+            <span class="undo-divider"></span>
+            <button class="undo-btn" id="btn-redo-sidebar" title="重做 (Ctrl+Shift+Z)">
+              <i class="fas fa-rotate-right"></i> 重做
+            </button>
+            <span class="undo-divider"></span>
+            <span class="undo-count" id="undo-count">0</span>
+          </div>
+          <div class="undo-hint">
+            <i class="fas fa-info-circle"></i>
+            <span>点击可逐步回退，最多保留 50 步</span>
+          </div>
+        </div>
+
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
           <div class="sidebar-header">
             <i class="fas fa-sitemap"></i> 页面结构
             <span class="badge" id="element-count" style="margin-left:auto;">0</span>
