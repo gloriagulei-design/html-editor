@@ -199,12 +199,13 @@ const CHROME_ARGS = [
 // ★ 不再硬编码手机屏尺寸，改为自动检测 HTML 的设计宽度
 const DEFAULT_VIEWPORT = { width: 1280, height: 900 }; // 默认用PC宽度渲染，后续自动检测实际宽度
 const TIMEOUTS = {
-  pageLoad: 30000,
-  canvasWait: 15000,
-  postRender: 2000,
-  postExpand: 500,
-  postStyle: 300,
-  postViewport: 500  // viewport 切换后等待重排
+  pageLoad: 20000,     // 页面加载（从30s缩短）
+  canvasWait: 8000,    // Canvas图表等待（从15s缩短）
+  postRender: 800,     // 渲染后等待（从2s缩短，大部分页面800ms足够）
+  postExpand: 200,     // 展开隐藏内容（从500ms缩短）
+  postStyle: 150,      // CSS注入后（从300ms缩短）
+  postViewport: 200,   // viewport切换后（从500ms缩短）
+  requestTotal: 45000  // ★ 请求级总超时（45秒，防止网关504）
 };
 
 // 截图模式：单页最大高度（超过此高度将分段截图后拼接）
@@ -450,8 +451,10 @@ async function createRenderedPage(htmlContent, options = {}) {
   // PC端设计：宽度 > 500px，用检测到的宽度
   const pdfWidth = detectedWidth;
 
-  // Step3: 设置正确的 viewport 宽度，高度保持足够大（避免100vh问题后面处理）
-  const viewport = { width: pdfWidth, height: DEFAULT_VIEWPORT.height };
+  // Step3: 设置正确的 viewport，并直接设高度为预估的大值（避免100vh问题后面处理）
+  // ★ 优化：宽度设为检测到的宽度，高度设为一个较大的值（避免100vh导致内容被截断）
+  // 后续截图时会再精确调整viewport高度
+  const viewport = { width: pdfWidth, height: Math.max(DEFAULT_VIEWPORT.height, 2000) };
   await page.setViewport(viewport);
   await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
@@ -604,8 +607,7 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
   const scale = 2; // deviceScaleFactor，2x高清
 
   try {
-    // ★ 核心思路：viewport 高度设为内容实际高度，全页截图，生成一张无限长PDF
-    // 不做A4分页，不做缩放，直接以HTML原始设计尺寸输出
+    // ★ 只需精确调整 viewport 高度为 contentHeight，宽度已在 createRenderedPage 中设好
     await page.setViewport({
       width: viewport.width,
       height: contentHeight,
@@ -669,16 +671,26 @@ async function convertHtmlToPdf(htmlContent, options = {}) {
  * 接收 HTML 内容，返回 PDF 文件
  */
 app.post('/api/html-to-pdf', async (req, res) => {
+  // ★ 请求级总超时保护：45秒后自动终止，防止网关504
+  const requestTimer = setTimeout(() => {
+    if (!res.headersSent) {
+      res.status(504).json({ error: 'PDF 生成超时（45秒），内容可能过大，请尝试使用浏览器"打印→另存为PDF"' });
+    }
+  }, TIMEOUTS.requestTotal);
+
   try {
     const { html, filename, pdfWidth, pdfMode } = req.body;
 
     if (!html || typeof html !== 'string') {
+      clearTimeout(requestTimer);
       return res.status(400).json({ error: '缺少 html 字段' });
     }
 
     console.log(`📄 收到 PDF 转换请求，HTML 长度: ${html.length} 字符, PDF宽度: ${pdfWidth || 'auto'}, 模式: ${pdfMode || 'screenshot'}`);
 
     const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'screenshot' });
+
+    clearTimeout(requestTimer);
 
     // 设置响应头，返回 PDF 文件
     const pdfFilename = (filename || 'document').replace(/\.html?$/i, '') + '.pdf';
@@ -691,8 +703,11 @@ app.post('/api/html-to-pdf', async (req, res) => {
 
     console.log(`📤 PDF 已发送: ${pdfFilename} (${result.mode}模式, ${result.pageCount}页)`);
   } catch (err) {
+    clearTimeout(requestTimer);
     console.error('❌ PDF 转换失败:', err.message);
-    res.status(500).json({ error: 'PDF 转换失败: ' + err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'PDF 转换失败: ' + err.message });
+    }
   }
 });
 

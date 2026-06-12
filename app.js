@@ -1181,7 +1181,7 @@ ${bodyContent}
 
       // 带超时的 fetch 请求
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120秒超时（截图模式可能较慢）
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时（网关通常30-60秒，需在此前完成）
 
       let response;
       try {
@@ -1199,7 +1199,7 @@ ${bodyContent}
       } catch (fetchErr) {
         clearTimeout(timeoutId);
         if (fetchErr.name === 'AbortError') {
-          throw new Error('PDF 生成超时（120秒），请检查内容是否过大');
+          throw new Error('PDF 生成超时（60秒），内容可能过大，请尝试减少内容或使用浏览器打印');
         }
         throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
       }
@@ -1240,8 +1240,9 @@ ${bodyContent}
       // 降级方案：使用浏览器打印功能保存为 PDF
       const useFallback = confirm(
         `⚠️ 服务端 PDF 生成失败：${err.message}\n\n` +
-        `是否使用浏览器「打印→另存为 PDF」方式导出？\n` +
-        `（在打印对话框中选择"另存为PDF"即可）`
+        `建议使用浏览器「打印→另存为 PDF」方式导出\n` +
+        `（在打印对话框中选择"另存为PDF"即可）\n\n` +
+        `是否现在尝试？`
       );
       if (useFallback) {
         // 在新窗口打开纯净版 HTML，然后调用 print()
