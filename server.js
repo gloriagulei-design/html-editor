@@ -803,7 +803,7 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
  * 核心：HTML → PDF 转换（自动根据模式分发）
  */
 async function convertHtmlToPdf(htmlContent, options = {}) {
-  const mode = options.pdfMode || 'screenshot';
+  const mode = options.pdfMode || 'print';
   if (mode === 'screenshot') {
     return convertHtmlToPdfScreenshot(htmlContent, options);
   }

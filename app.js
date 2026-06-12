@@ -1175,8 +1175,9 @@ ${bodyContent}
       fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
       fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
 
-      // 使用截图模式，宽度自动检测（服务端根据HTML内容自动判断手机/PC设计宽度）
-      const pdfMode = 'screenshot';
+      // 使用打印模式（默认，速度快、文字可选、稳定性高）
+      // screenshot模式：像素级精确但生成慢、文件大、某些内容可能失败
+      const pdfMode = 'print';
       const pdfWidth = 'auto';
 
       // 带超时的 fetch 请求
