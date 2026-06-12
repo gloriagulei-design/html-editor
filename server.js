@@ -199,13 +199,13 @@ const CHROME_ARGS = [
 // ★ 不再硬编码手机屏尺寸，改为自动检测 HTML 的设计宽度
 const DEFAULT_VIEWPORT = { width: 1280, height: 900 }; // 默认用PC宽度渲染，后续自动检测实际宽度
 const TIMEOUTS = {
-  pageLoad: 20000,     // 页面加载（从30s缩短）
-  canvasWait: 8000,    // Canvas图表等待（从15s缩短）
-  postRender: 800,     // 渲染后等待（从2s缩短，大部分页面800ms足够）
-  postExpand: 200,     // 展开隐藏内容（从500ms缩短）
-  postStyle: 150,      // CSS注入后（从300ms缩短）
-  postViewport: 200,   // viewport切换后（从500ms缩短）
-  requestTotal: 45000  // ★ 请求级总超时（45秒，防止网关504）
+  pageLoad: 15000,     // 页面加载（15秒，避免networkidle0等太久）
+  canvasWait: 5000,    // Canvas图表等待（5秒，大部分图表2秒内渲染完成）
+  postRender: 500,     // 渲染后等待（500ms，大部分页面足够）
+  postExpand: 150,     // 展开隐藏内容（150ms）
+  postStyle: 100,      // CSS注入后（100ms）
+  postViewport: 150,   // viewport切换后（150ms）
+  requestTotal: 25000  // ★ 请求级总超时（25秒，必须在网关30秒超时前返回）
 };
 
 // 截图模式：单页最大高度（超过此高度将分段截图后拼接）
@@ -222,12 +222,42 @@ if (!existsSync(TMP_DIR)) mkdirSync(TMP_DIR, { recursive: true });
 
 // ====== Puppeteer 浏览器池 ======
 let browserInstance = null;
+let browserLaunchTime = 0;
+const BROWSER_MAX_AGE = 2 * 60 * 60 * 1000; // 浏览器最大存活2小时，定期重启防内存泄漏
+const MAX_BROWSER_PAGES = 20; // 最大同时打开的页面数
 
 async function getBrowser() {
+  // ★ 定期重启浏览器（防内存泄漏）
   if (browserInstance && browserInstance.isConnected()) {
+    const age = Date.now() - browserLaunchTime;
+    if (age > BROWSER_MAX_AGE) {
+      console.log(`🔄 Chromium 已运行 ${Math.round(age / 60000)} 分钟，执行定期重启`);
+      try {
+        const pages = await browserInstance.pages();
+        await Promise.all(pages.map(p => p.close().catch(() => {})));
+        await browserInstance.close();
+      } catch (_) {}
+      browserInstance = null;
+    }
+  }
+
+  if (browserInstance && browserInstance.isConnected()) {
+    // ★ 检查打开的页面数量，防止资源泄漏
+    try {
+      const pages = await browserInstance.pages();
+      if (pages.length > MAX_BROWSER_PAGES) {
+        console.warn(`⚠️ Chromium 打开了 ${pages.length} 个页面（上限 ${MAX_BROWSER_PAGES}），强制关闭多余页面`);
+        // 关闭除第一个（about:blank）之外的所有页面
+        for (let i = 1; i < pages.length; i++) {
+          try { await pages[i].close(); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     return browserInstance;
   }
+
   console.log(`🚀 启动 Chromium: ${CHROME_PATH}`);
+  browserLaunchTime = Date.now();
   browserInstance = await puppeteer.launch({
     executablePath: CHROME_PATH,
     headless: 'new',
@@ -306,9 +336,16 @@ async function createRenderedPage(htmlContent, options = {}) {
   try {
     page = await browser.newPage();
   } catch (pageErr) {
-    console.error('❌ 创建页面失败:', pageErr.message);
+    console.error('❌ 创建页面失败，尝试重启浏览器:', pageErr.message);
+    // 重启浏览器后重试
+    try { await browser.close(); } catch (_) {}
     browserInstance = null;
-    throw new Error('创建渲染页面失败，请重试: ' + pageErr.message);
+    try {
+      browser = await getBrowser();
+      page = await browser.newPage();
+    } catch (retryErr) {
+      throw new Error('创建渲染页面失败，请重试: ' + retryErr.message);
+    }
   }
 
   // Step0: 先以默认PC宽度渲染，用于检测实际内容宽度
@@ -319,20 +356,20 @@ async function createRenderedPage(htmlContent, options = {}) {
   writeFileSync(tmpHtmlPath, htmlContent, 'utf-8');
 
   try {
+    // ★ 优化加载策略：先用 domcontentloaded 确保DOM就绪，再短暂等待网络空闲
     await page.goto(`file://${tmpHtmlPath}`, {
-      waitUntil: 'networkidle0',
+      waitUntil: 'domcontentloaded',
       timeout: TIMEOUTS.pageLoad
     });
-  } catch (loadErr) {
-    console.warn('⚠️ networkidle0 超时，降级为 domcontentloaded:', loadErr.message);
+    // 额外等待网络请求完成（最多3秒，避免外部资源阻塞太久）
     try {
-      await page.goto(`file://${tmpHtmlPath}`, {
-        waitUntil: 'domcontentloaded',
-        timeout: TIMEOUTS.pageLoad
-      });
-    } catch (fallbackErr) {
-      throw new Error('页面渲染超时，请检查 HTML 内容是否包含无法加载的资源');
+      await page.waitForNetworkIdle({ timeout: 3000, idleTime: 500 });
+    } catch (_) {
+      // 网络未完全空闲也没关系，大部分内容已渲染
     }
+  } catch (loadErr) {
+    console.warn('⚠️ 页面加载超时:', loadErr.message);
+    throw new Error('页面渲染超时，请检查 HTML 内容是否包含无法加载的资源');
   } finally {
     try { unlinkSync(tmpHtmlPath); } catch (_) {}
   }
@@ -689,7 +726,7 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
         window.scrollTo(0, y);
       }, scrollY);
       // 短暂等待滚动完成和渲染
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 50));
 
       // ★ 如果段高度与 viewport 高度差异大，调整 viewport 以避免多余空白
       if (thisSegmentCssHeight !== segmentHeight) {
@@ -698,12 +735,12 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
           height: thisSegmentCssHeight,
           deviceScaleFactor: scale
         });
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 80));
         // 滚动可能被重置，重新设置
         await page.evaluate((y) => {
           window.scrollTo(0, y);
         }, scrollY);
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 30));
       }
 
       // 截取当前可视区域
@@ -780,10 +817,10 @@ async function convertHtmlToPdf(htmlContent, options = {}) {
  * 接收 HTML 内容，返回 PDF 文件
  */
 app.post('/api/html-to-pdf', async (req, res) => {
-  // ★ 请求级总超时保护：45秒后自动终止，防止网关504
+  // ★ 请求级总超时保护：25秒后自动终止，必须在网关30秒超时前返回
   const requestTimer = setTimeout(() => {
     if (!res.headersSent) {
-      res.status(504).json({ error: 'PDF 生成超时（45秒），内容可能过大，请尝试使用浏览器"打印→另存为PDF"' });
+      res.status(504).json({ error: 'PDF 生成超时（25秒），内容可能过大。建议：①减少内容长度 ②使用浏览器"打印→另存为PDF"' });
     }
   }, TIMEOUTS.requestTotal);
 

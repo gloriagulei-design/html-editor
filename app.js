@@ -1181,7 +1181,7 @@ ${bodyContent}
 
       // 带超时的 fetch 请求
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时（网关通常30-60秒，需在此前完成）
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时（服务端25秒会先返回504）
 
       let response;
       try {
@@ -1199,7 +1199,7 @@ ${bodyContent}
       } catch (fetchErr) {
         clearTimeout(timeoutId);
         if (fetchErr.name === 'AbortError') {
-          throw new Error('PDF 生成超时（60秒），内容可能过大，请尝试减少内容或使用浏览器打印');
+          throw new Error('PDF 生成超时（30秒），内容可能过大。建议：①减少内容长度 ②使用浏览器"打印→另存为PDF"');
         }
         throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
       }
