@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>富途AI组织提效诊断报告 - 测试</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6fa; color: #333; }
+  .page { width: 1200px; margin: 0 auto; background: #fff; }
+  .header { background: linear-gradient(135deg, #1a3a8a, #2563eb); padding: 60px 80px; color: #fff; }
+  .header h1 { font-size: 42px; font-weight: 700; margin-bottom: 16px; }
+  .header p { font-size: 18px; opacity: 0.85; line-height: 1.6; }
+  .header .badge { display: inline-block; background: rgba(255,255,255,0.2); border-radius: 20px; padding: 6px 20px; font-size: 14px; margin-top: 20px; }
+  .section { padding: 50px 80px; }
+  .section-title { font-size: 28px; font-weight: 700; color: #1a3a8a; margin-bottom: 30px; padding-left: 16px; border-left: 4px solid #2563eb; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-bottom: 40px; }
+  .kpi-card { background: #f8faff; border-radius: 12px; padding: 28px; text-align: center; border: 1px solid #e0e7ff; }
+  .kpi-card .number { font-size: 48px; font-weight: 800; color: #2563eb; }
+  .kpi-card .unit { font-size: 16px; color: #2563eb; }
+  .kpi-card .label { font-size: 14px; color: #666; margin-top: 8px; }
+  .kpi-card .trend { font-size: 13px; color: #10b981; margin-top: 6px; }
+  .kpi-card .trend.down { color: #ef4444; }
+  .chart-container { background: #f8faff; border-radius: 12px; padding: 32px; margin-bottom: 32px; }
+  .chart-title { font-size: 18px; font-weight: 600; margin-bottom: 24px; color: #1a3a8a; }
+  .bar-group { margin-bottom: 16px; }
+  .bar-label { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; }
+  .bar-label .name { color: #555; }
+  .bar-label .value { color: #1a3a8a; font-weight: 600; }
+  .bar-track { background: #e5e7eb; border-radius: 6px; height: 12px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; }
+  .bar-fill.blue { background: linear-gradient(90deg, #2563eb, #60a5fa); }
+  .bar-fill.green { background: linear-gradient(90deg, #10b981, #34d399); }
+  .bar-fill.orange { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+  .bar-fill.red { background: linear-gradient(90deg, #ef4444, #f87171); }
+  .data-table { width: 100%; border-collapse: collapse; margin-bottom: 32px; }
+  .data-table thead th { background: #1a3a8a; color: #fff; padding: 14px 20px; text-align: left; font-size: 14px; font-weight: 600; }
+  .data-table thead th:first-child { border-radius: 8px 0 0 0; }
+  .data-table thead th:last-child { border-radius: 0 8px 0 0; }
+  .data-table tbody td { padding: 14px 20px; border-bottom: 1px solid #e5e7eb; font-size: 14px; }
+  .data-table tbody tr:hover { background: #f8faff; }
+  .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .status-badge.good { background: #d1fae5; color: #065f46; }
+  .status-badge.warn { background: #fef3c7; color: #92400e; }
+  .status-badge.bad { background: #fee2e2; color: #991b1b; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-bottom: 32px; }
+  .info-card { background: #f8faff; border-radius: 12px; padding: 28px; border: 1px solid #e0e7ff; }
+  .info-card h3 { font-size: 18px; color: #1a3a8a; margin-bottom: 16px; }
+  .info-card ul { list-style: none; }
+  .info-card ul li { padding: 10px 0; border-bottom: 1px solid #e5e7eb; font-size: 14px; color: #555; display: flex; align-items: center; }
+  .info-card ul li::before { content: "▸"; color: #2563eb; margin-right: 10px; font-weight: 700; }
+  .info-card ul li:last-child { border-bottom: none; }
+  .footer { background: #1a3a8a; padding: 40px 80px; color: #fff; text-align: center; }
+  .footer p { font-size: 14px; opacity: 0.7; }
+  .footer .logo { font-size: 20px; font-weight: 700; margin-bottom: 10px; }
+  .divider { height: 1px; background: #e5e7eb; margin: 0 80px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <h1>富途AI组织提效诊断报告</h1>
+    <p>基于多维度数据分析，全面诊断组织效能瓶颈，提供可落地的提效路径</p>
+    <span class="badge">2026年Q2 · 内部机密</span>
+  </div>
+  <div class="section">
+    <div class="section-title">核心效能指标概览</div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="number">87<span class="unit">分</span></div><div class="label">综合效能评分</div><div class="trend">↑ 较上季度提升5.2%</div></div>
+      <div class="kpi-card"><div class="number">3.2<span class="unit">天</span></div><div class="label">平均需求交付周期</div><div class="trend down">↓ 较上季度增加0.4天</div></div>
+      <div class="kpi-card"><div class="number">94<span class="unit">%</span></div><div class="label">自动化测试覆盖率</div><div class="trend">↑ 较上季度提升12%</div></div>
+      <div class="kpi-card"><div class="number">156<span class="unit">个</span></div><div class="label">本月已完成需求</div><div class="trend">↑ 较上月增加23个</div></div>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="section">
+    <div class="section-title">各团队效能评分对比</div>
+    <div class="chart-container">
+      <div class="chart-title">团队效能评分（满分100）</div>
+      <div class="bar-group"><div class="bar-label"><span class="name">交易平台组</span><span class="value">92分</span></div><div class="bar-track"><div class="bar-fill blue" style="width: 92%"></div></div></div>
+      <div class="bar-group"><div class="bar-label"><span class="name">行情数据组</span><span class="value">88分</span></div><div class="bar-track"><div class="bar-fill blue" style="width: 88%"></div></div></div>
+      <div class="bar-group"><div class="bar-label"><span class="name">账户结算组</span><span class="value">85分</span></div><div class="bar-track"><div class="bar-fill green" style="width: 85%"></div></div></div>
+      <div class="bar-group"><div class="bar-label"><span class="name">客户端研发组</span><span class="value">79分</span></div><div class="bar-track"><div class="bar-fill orange" style="width: 79%"></div></div></div>
+      <div class="bar-group"><div class="bar-label"><span class="name">基础架构组</span><span class="value">76分</span></div><div class="bar-track"><div class="bar-fill orange" style="width: 76%"></div></div></div>
+      <div class="bar-group"><div class="bar-label"><span class="name">质量保障组</span><span class="value">68分</span></div><div class="bar-track"><div class="bar-fill red" style="width: 68%"></div></div></div>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="section">
+    <div class="section-title">关键瓶颈项分析</div>
+    <table class="data-table">
+      <thead><tr><th>瓶颈项</th><th>影响团队</th><th>当前状态</th><th>预计提效</th><th>优先级</th></tr></thead>
+      <tbody>
+        <tr><td>需求评审流程冗长</td><td>客户端研发组</td><td><span class="status-badge bad">严重</span></td><td>交付周期缩短40%</td><td>P0</td></tr>
+        <tr><td>自动化回归覆盖不足</td><td>质量保障组</td><td><span class="status-badge bad">严重</span></td><td>测试效率提升60%</td><td>P0</td></tr>
+        <tr><td>跨团队沟通成本高</td><td>多个团队</td><td><span class="status-badge warn">中等</span></td><td>沟通时间减少30%</td><td>P1</td></tr>
+        <tr><td>技术债务积累</td><td>基础架构组</td><td><span class="status-badge warn">中等</span></td><td>故障率降低50%</td><td>P1</td></tr>
+        <tr><td>部署流程可优化</td><td>交易平台组</td><td><span class="status-badge good">轻微</span></td><td>部署时间减少25%</td><td>P2</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="divider"></div>
+  <div class="section">
+    <div class="section-title">提效路径与风险提示</div>
+    <div class="two-col">
+      <div class="info-card"><h3>🎯 近期提效路径（1-3个月）</h3><ul><li>推行需求评审快速通道，减少冗余环节</li><li>建立自动化回归测试基线，逐步提升覆盖率</li><li>引入跨团队站会机制，降低沟通成本</li><li>启动技术债务清理专项，每月分配20%工时</li><li>优化CI/CD流水线，实现一键部署</li></ul></div>
+      <div class="info-card"><h3>⚠️ 主要风险与应对</h3><ul><li>流程变更阻力 → 渐进式推广 + 高层背书</li><li>自动化投入与业务冲突 → 设定专项时间窗</li><li>技术债清理影响新需求 → 严格限定范围</li><li>工具链切换成本 → 分批灰度迁移</li><li>人员能力参差 → 建立培训与结对机制</li></ul></div>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="logo">FUTU · 组织效能中心</div>
+    <p>本报告为内部机密文件，仅限授权人员查阅 · 生成日期：2026年6月12日</p>
+  </div>
+</div>
+</body>
+</html>
