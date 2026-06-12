@@ -56,11 +56,11 @@ RUN mkdir -p /app/.tmp && chown appuser:nodejs /app/.tmp
 USER appuser
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 3100
 
 # 设置环境变量
 ENV NODE_ENV=production
-ENV PORT=8000
+ENV PORT=3100
 ENV HOST=0.0.0.0
 
 # 启动服务

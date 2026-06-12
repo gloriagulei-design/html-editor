@@ -173,33 +173,7 @@
       animation: pulse-voice 1.5s ease-in-out infinite;
     }
     .btn-voice.active i { animation: mic-pulse 1s ease-in-out infinite; }
-    /* PDF 宽度选择器 */
-    .pdf-width-selector select,
-    .pdf-mode-selector select {
-      appearance: none;
-      background: var(--surface-light);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 6px 28px 6px 10px;
-      font-size: 11px;
-      cursor: pointer;
-      outline: none;
-      transition: all 0.2s;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888899' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 8px center;
-    }
-    .pdf-width-selector select:hover,
-    .pdf-mode-selector select:hover {
-      border-color: var(--accent);
-      color: var(--text);
-    }
-    .pdf-width-selector select:focus,
-    .pdf-mode-selector select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px var(--accent-glow);
-    }
+
     @keyframes pulse-voice {
       0%, 100% { box-shadow: 0 0 0 4px rgba(239,68,68,0.2); }
       50% { box-shadow: 0 0 0 10px rgba(239,68,68,0.05); }
@@ -787,22 +761,9 @@
         <button class="btn btn-primary" id="btn-download">
           <i class="fas fa-download"></i> 导出 HTML
         </button>
-        <button class="btn btn-accent" id="btn-download-pdf" title="一键导出 PDF (与 HTML 视觉 100% 一致)">
+        <button class="btn btn-accent" id="btn-download-pdf" title="一键导出 PDF · 适配手机屏 · 与 HTML 视觉 100% 一致">
           <i class="fas fa-file-pdf"></i> 导出 PDF
         </button>
-        <div class="pdf-width-selector" id="pdf-width-selector" title="PDF 页面宽度">
-          <select id="pdf-width-mode">
-            <option value="auto">🖥 自适应宽度</option>
-            <option value="390">📱 手机宽度 (390px)</option>
-            <option value="768">📟 平板宽度 (768px)</option>
-          </select>
-        </div>
-        <div class="pdf-mode-selector" id="pdf-mode-selector" title="PDF 导出模式">
-          <select id="pdf-export-mode">
-            <option value="screenshot">📸 截图模式 (推荐·100%一致)</option>
-            <option value="print">🖨 打印模式 (文字可选)</option>
-          </select>
-        </div>
       </div>
     </header>
 

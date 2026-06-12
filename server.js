@@ -196,7 +196,7 @@ const CHROME_ARGS = [
   '--font-cache-shared-handle'
 ];
 
-const VIEWPORT = { width: 1400, height: 900 };
+const VIEWPORT = { width: 390, height: 844 };
 const TIMEOUTS = {
   pageLoad: 30000,
   canvasWait: 15000,
