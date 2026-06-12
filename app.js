@@ -76,6 +76,7 @@
     btnReset        : $('#btn-reset'),
     btnNew          : $('#btn-new'),
     btnDownload     : $('#btn-download'),
+    btnDownloadPdf  : $('#btn-download-pdf'),
     btnDeleteEl     : $('#btn-delete-el'),
     btnCopyCode     : $('#btn-copy-code'),
     btnFormatCode   : $('#btn-format-code'),
@@ -155,7 +156,7 @@
       } else {
         currentEl.style.position = '';
       }
-      syncFromFrame(); renderPreview(); addHistory(`修改定位: ${val || 'static'}`);
+      syncFromFrame(); refreshAfterEdit(); addHistory(`修改定位: ${val || 'static'}`);
     });
 
     // 位置微调按钮（使用 transform: translate）
@@ -226,7 +227,7 @@
       if (!currentEl) return;
       pushUndo('修改自定义CSS', currentHtml);
       currentEl.setAttribute('style', els.propCustomCss.value);
-      renderPreview(); addHistory('修改自定义CSS');
+      refreshAfterEdit(); addHistory('修改自定义CSS');
     });
 
     /* 对齐 */
@@ -243,31 +244,32 @@
       if (!currentEl) return;
       pushUndo('修改 href', currentHtml);
       currentEl.setAttribute('href', els.propHref.value);
-      renderPreview(); addHistory('修改 href');
+      refreshAfterEdit(); addHistory('修改 href');
     });
     els.propSrc.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 src', currentHtml);
       currentEl.setAttribute('src', els.propSrc.value);
-      renderPreview(); addHistory('修改 src');
+      refreshAfterEdit(); addHistory('修改 src');
     });
     els.propId.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 ID', currentHtml);
       currentEl.setAttribute('id', els.propId.value);
-      renderPreview(); addHistory('修改 ID');
+      refreshAfterEdit(); addHistory('修改 ID');
     });
     els.propClass.addEventListener('input', () => {
       if (!currentEl) return;
       pushUndo('修改 Class', currentHtml);
       currentEl.setAttribute('class', els.propClass.value);
-      renderPreview(); addHistory('修改 Class');
+      refreshAfterEdit(); addHistory('修改 Class');
     });
 
     /* 工具栏 */
     els.btnReset     .addEventListener('click', resetEditor);
     els.btnNew       .addEventListener('click', () => loadDefaultContent());
     els.btnDownload  .addEventListener('click', downloadHtml);
+    els.btnDownloadPdf.addEventListener('click', downloadPdf);
     els.btnCopyCode  .addEventListener('click', copyCode);
     els.btnFormatCode.addEventListener('click', formatCode);
     els.btnDeleteEl  .addEventListener('click', deleteCurrentElement);
@@ -334,8 +336,8 @@
     els.fileSize.textContent = formatBytes(size || new Blob([html]).size);
     els.dropZone.style.display = 'none';
     els.fileInfo.classList.add('show');
-    editHistory = []; undoStack = []; redoStack = [];
-    updateHistoryUI(); updateUndoUI();
+    editHistory = []; undoStack = []; redoStack = []; voiceLog = [];
+    updateHistoryUI(); updateUndoUI(); updateVoiceLogUI();
     showToast(`已加载「${name}」`, 'success');
   }
 
@@ -356,36 +358,7 @@
     if (!style) {
       style = doc.createElement('style');
       style.id = 'html-editor-injected';
-      style.textContent = `
-        .html-editor-selected {
-          outline: 2.5px solid #6366f1 !important;
-          outline-offset: 2px !important;
-          cursor: move !important;
-          background: rgba(99,102,241,0.05) !important;
-        }
-        .html-editor-hover {
-          outline: 1.5px dashed rgba(99,102,241,0.5) !important;
-          outline-offset: 1px !important;
-          cursor: text !important;
-        }
-        .html-editor-dragging {
-          outline: 3px solid #10b981 !important;
-          outline-offset: 2px !important;
-          opacity: 0.85 !important;
-          z-index: 99999 !important;
-          cursor: grabbing !important;
-          box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
-        }
-        .html-editor-hover::after {
-          content: attr(data-tag);
-          position: absolute; top: -18px; left: 0;
-          background: #6366f1; color: #fff; font-size: 10px;
-          padding: 1px 6px; border-radius: 4px; pointer-events: none; z-index: 999999; white-space: nowrap;
-        }
-        body { position: relative; }
-        * { position: relative; transition: background-color 0.15s; }
-        body *:hover { background-color: rgba(99,102,241,0.02); }
-      `;
+      style.textContent = EDITOR_INJECTED_CSS;
       if (doc.head) doc.head.appendChild(style);
     }
 
@@ -603,32 +576,94 @@
     els.propClass.value = el.className || '';
   }
 
+  /* ── 编辑器注入样式（共享，onFrameLoad 和 refreshAfterEdit 都用） ── */
+  const EDITOR_INJECTED_CSS = `
+    .html-editor-selected {
+      outline: 2.5px solid #6366f1 !important;
+      outline-offset: 2px !important;
+      cursor: move !important;
+      background: rgba(99,102,241,0.05) !important;
+    }
+    .html-editor-hover {
+      outline: 1.5px dashed rgba(99,102,241,0.5) !important;
+      outline-offset: 1px !important;
+      cursor: text !important;
+    }
+    .html-editor-dragging {
+      outline: 3px solid #10b981 !important;
+      outline-offset: 2px !important;
+      opacity: 0.85 !important;
+      z-index: 99999 !important;
+      cursor: grabbing !important;
+      box-shadow: 0 8px 30px rgba(16,185,129,0.3) !important;
+    }
+    .html-editor-hover::after {
+      content: attr(data-tag);
+      position: absolute; top: -18px; left: 0;
+      background: #6366f1; color: #fff; font-size: 10px;
+      padding: 1px 6px; border-radius: 4px; pointer-events: none; z-index: 999999; white-space: nowrap;
+    }
+    body { position: relative; }
+    * { position: relative; transition: background-color 0.15s; }
+    body *:hover { background-color: rgba(99,102,241,0.02); }
+  `;
+
+  /* ── 编辑后刷新（不重写 iframe，保留 currentEl 引用） ── */
+  function refreshAfterEdit() {
+    syncFromFrame();                 // 同步 HTML 字符串（会移除注入样式和编辑器 class）
+    // 重新注入编辑器交互样式
+    const doc = els.previewFrame.contentDocument;
+    if (doc && doc.head) {
+      let style = doc.getElementById('html-editor-injected');
+      if (!style) {
+        style = doc.createElement('style');
+        style.id = 'html-editor-injected';
+        doc.head.appendChild(style);
+      }
+      style.textContent = EDITOR_INJECTED_CSS;
+    }
+    // 重新添加 data-tag 属性（事件监听器还在，不需要重新绑定）
+    if (doc && doc.body) {
+      doc.querySelectorAll('*').forEach(el => {
+        if (el.id !== 'html-editor-injected') {
+          el.setAttribute('data-tag', el.tagName.toLowerCase());
+        }
+      });
+    }
+    // 重新应用选中样式
+    if (currentEl) {
+      currentEl.classList.add('html-editor-selected');
+    }
+    buildElementTree();              // 更新元素树
+    updateCodePanel();               // 更新代码面板
+  }
+
   function updateStyle(prop, val) {
     if (!currentEl || !val) return;
     pushUndo(`修改样式: ${prop}`, currentHtml);
     currentEl.style[prop] = val;
-    syncFromFrame(); renderPreview(); addHistory(`修改样式: ${prop}`);
+    refreshAfterEdit(); addHistory(`修改样式: ${prop}`);
   }
 
   function updateTextContent() {
     if (!currentEl) return;
     pushUndo('修改文本', currentHtml);
     currentEl.textContent = els.propTextContent.value;
-    syncFromFrame(); renderPreview(); buildElementTree(); addHistory('修改文本');
+    refreshAfterEdit(); addHistory('修改文本');
   }
 
   function updateHtmlContent() {
     if (!currentEl) return;
     pushUndo('修改 HTML 内容', currentHtml);
     currentEl.innerHTML = els.propHtmlContent.value;
-    syncFromFrame(); renderPreview(); addHistory('修改 HTML 内容');
+    refreshAfterEdit(); addHistory('修改 HTML 内容');
   }
 
   function deleteCurrentElement() {
     if (!currentEl) return;
     if (!confirm('确定删除此元素？')) return;
     pushUndo('删除元素', currentHtml);
-    currentEl.remove(); syncFromFrame(); renderPreview();
+    currentEl.remove(); syncFromFrame();
     buildElementTree(); updateCodePanel(); closePropertiesPanel();
     addHistory('删除元素'); showToast('元素已删除', 'success');
   }
@@ -649,7 +684,7 @@
       pushUndo('修改 HTML 源码', currentHtml);
       currentEl.innerHTML = els.modalTextarea.value;
       els.propHtmlContent.value = currentEl.innerHTML;
-      syncFromFrame(); renderPreview(); addHistory('修改 HTML 源码');
+      refreshAfterEdit(); addHistory('修改 HTML 源码');
       showToast('HTML 源码已更新', 'success');
     }
     closeHtmlModal();
@@ -783,6 +818,75 @@
     if (editHistory.length > 30) editHistory.pop();
   }
 
+  /* ── 语音命令日志 ── */
+  let voiceLog = [];
+  function addVoiceLog(type, command, success, message) {
+    const entry = {
+      type: type,
+      command: command,
+      success: success,
+      message: message,
+      time: new Date().toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }),
+      timestamp: Date.now()
+    };
+    voiceLog.unshift(entry);
+    if (voiceLog.length > 50) voiceLog.pop();
+    updateVoiceLogUI();
+  }
+
+  function updateVoiceLogUI() {
+    const container = document.getElementById('voice-log-list');
+    if (!container) return;
+    const countEl = document.getElementById('voice-log-count');
+    if (countEl) countEl.textContent = voiceLog.length;
+
+    container.innerHTML = '';
+    if (voiceLog.length === 0) {
+      container.innerHTML = '<div class="voice-log-empty"><i class="fas fa-microphone-slash"></i><span>暂无语音命令记录</span></div>';
+      return;
+    }
+
+    voiceLog.forEach((entry, idx) => {
+      const iconMap = {
+        recognize: 'fa-ear-listen',
+        replace: 'fa-right-left',
+        move: 'fa-arrows-up-down-left-right',
+        color: 'fa-palette',
+        bgcolor: 'fa-fill-drip',
+        fontsize: 'fa-text-height',
+        bold: 'fa-bold',
+        select: 'fa-hand-pointer',
+        unknown: 'fa-question'
+      };
+      const icon = iconMap[entry.type] || 'fa-microphone';
+      const statusIcon = entry.success ? 'fa-circle-check' : 'fa-circle-xmark';
+      const statusClass = entry.success ? 'voice-log-success' : 'voice-log-fail';
+
+      const item = document.createElement('div');
+      item.className = 'voice-log-item';
+      item.innerHTML =
+        '<div class="voice-log-icon-wrap">' +
+          '<i class="fas ' + icon + '"></i>' +
+        '</div>' +
+        '<div class="voice-log-content">' +
+          '<div class="voice-log-cmd">' + escapeHtml(entry.command) + '</div>' +
+          '<div class="voice-log-meta">' +
+            '<span class="voice-log-time">' + entry.time + '</span>' +
+            '<span class="voice-log-status ' + statusClass + '">' +
+              '<i class="fas ' + statusIcon + '"></i> ' + escapeHtml(entry.message) +
+            '</span>' +
+          '</div>' +
+        '</div>';
+      container.appendChild(item);
+    });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   /* ── 撤销/重做 核心系统 ── */
 
   /**
@@ -909,13 +1013,127 @@
     showToast(`已导出 ${currentFileName}`, 'success');
   }
 
+  /* ── 导出 PDF ── */
+  async function downloadPdf() {
+    syncFromFrame();
+    if (!currentHtml || currentHtml.trim() === '') {
+      showToast('没有可导出的内容', 'error');
+      return;
+    }
+
+    const btn = els.btnDownloadPdf;
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 生成中…';
+
+    try {
+      // 构建完整的 HTML 文档（确保包含所有样式）
+      let fullHtml = currentHtml;
+      // 如果当前内容不是完整HTML文档，包装一下
+      if (!currentHtml.trim().toLowerCase().startsWith('<!doctype') && !currentHtml.trim().toLowerCase().startsWith('<html')) {
+        fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${currentFileName}</title>
+</head>
+<body>
+${currentHtml}
+</body>
+</html>`;
+      }
+
+      // 带超时的 fetch 请求
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+
+      let response;
+      try {
+        response = await fetch('/api/html-to-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            html: fullHtml,
+            filename: currentFileName,
+            pdfWidth: (document.getElementById('pdf-width-mode') || {}).value || 'auto',
+            pdfMode: (document.getElementById('pdf-export-mode') || {}).value || 'print'
+          }),
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr.name === 'AbortError') {
+          throw new Error('PDF 生成超时（60秒），请检查内容是否过大');
+        }
+        throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
+      }
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        let errMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {
+          // 非 JSON 响应，使用默认错误消息
+        }
+        throw new Error(errMsg);
+      }
+
+      const blob = await response.blob();
+
+      // 验证返回的是 PDF 而非错误
+      if (blob.size < 100 || blob.type === 'application/json') {
+        throw new Error('PDF 生成结果异常，文件过小或格式错误');
+      }
+
+      const pdfName = currentFileName.replace(/\.html?$/i, '') + '.pdf';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = pdfName;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      const pages = response.headers.get('X-PDF-Pages') || '?';
+      const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
+      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB)`, 'success');
+    } catch (err) {
+      console.error('PDF 导出失败:', err);
+      // 降级方案：使用浏览器打印功能保存为 PDF
+      const useFallback = confirm(
+        `⚠️ 服务端 PDF 生成失败：${err.message}\n\n` +
+        `是否使用浏览器「打印→另存为 PDF」方式导出？\n` +
+        `（在打印对话框中选择"另存为PDF"即可）`
+      );
+      if (useFallback) {
+        // 在新窗口打开纯净版 HTML，然后调用 print()
+        const printWin = window.open('', '_blank');
+        if (printWin) {
+          printWin.document.write(currentHtml);
+          printWin.document.close();
+          printWin.onload = () => {
+            setTimeout(() => printWin.print(), 500);
+          };
+          showToast('已在新窗口打开，请在打印对话框中选择"另存为PDF"', 'info');
+        } else {
+          showToast('弹出窗口被拦截，请允许弹出窗口后重试', 'error');
+        }
+      }
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }
+  }
+
   function resetEditor() {
     if (!confirm('确定重置？未保存的修改将丢失。')) return;
     currentHtml = ''; currentEl = null;
     els.dropZone.style.display = null;
     els.fileInfo.classList.remove('show');
-    editHistory = []; undoStack = []; redoStack = [];
-    updateHistoryUI(); updateUndoUI();
+    editHistory = []; undoStack = []; redoStack = []; voiceLog = [];
+    updateHistoryUI(); updateUndoUI(); updateVoiceLogUI();
     loadDefaultContent();
     showToast('编辑器已重置', 'success');
   }
@@ -1050,15 +1268,21 @@
 
     // 命令正则模板
     const commandPatterns = [
-      // 1. 替换文字: "把[目标]改成[新文字]"
+      // 1. 替换文字: "把[目标]改成[新文字]"（优先级低于颜色/字号等，避免误匹配）
       {
         id: 'replace',
         name: '替换文字',
         icon: 'fa-text',
         tag: 'replace',
-        patterns: [/把(.+?)(?:改更|换)成(.+)/, /将(.+?)(?:改更|换)成(.+)/, /把(.+?)(?:换|改)为(.+)/],
+        patterns: [
+          /把(.+?)(?:改成|换成)(.+)/,
+          /将(.+?)(?:改成|换成)(.+)/,
+          /把(.+?)(?:改为|换为)(.+)/,
+          /将(.+?)(?:改为|换为)(.+)/,
+        ],
         desc: '将选中的文字替换为新的内容',
         example: '把讨论稿改成初稿',
+        priority: 2,
         execute: (m) => ({ type:'replace', target:m[1].trim(), replacement:m[2].trim() })
       },
       // 2. 移动元素: "把[元素]往[方向]移[数值][单位]"
@@ -1067,6 +1291,7 @@
         name: '移动元素',
         icon: 'fa-arrows-up-down-left-right',
         tag: 'move',
+        priority: 7,
         patterns: [
           /把(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
           /将(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
@@ -1084,16 +1309,19 @@
           return { type:'move', element:el, direction:dir, distance:num * unit };
         }
       },
-      // 3. 改颜色
+      // 3. 改颜色（优先级高于替换，避免"把标题改成红色"被替换命令误匹配）
       {
         id: 'color',
         name: '改颜色',
         icon: 'fa-palette',
         tag: 'style',
+        priority: 4,
         patterns: [
-          /把(.+?)(?:的?颜色)(?:改|换)成(.+色?)/,
-          /将(.+?)(?:的?颜色)(?:改|换)成(.+色?)/,
-          /(.+?)用(.+色?)/,
+          /把(.+?)(?:的?颜色)(?:改|换|设)成(.+)/,
+          /将(.+?)(?:的?颜色)(?:改|换|设)成(.+)/,
+          /把(.+?)(?:改成|换成)(红|绿|蓝|黄|紫|橙|粉|白|黑|灰|金|银)色?$/,
+          /把(.+?)(?:改成|换成)(.+色)$/,
+          /(.+?)(?:用|使用)(.+色)/,
         ],
         desc: '将文字颜色修改为指定颜色',
         example: '把标题改成红色',
@@ -1104,56 +1332,59 @@
           return { type:'color', element:el, color:color };
         }
       },
-      // 4. 改大小/字号
+      // 4. 改大小/字号（优先级高于替换）
       {
         id: 'fontsize',
         name: '改字号',
         icon: 'fa-text-height',
         tag: 'style',
+        priority: 5,
         patterns: [
           /把(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
           /将(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
+          /把(.+?)(?:改成|换成)(\d+)(?:号字|号|px|像素)/,
           /(.+?)(?:字号|字体|大小)(\d+)(?:号|px)?/,
         ],
         desc: '将元素字号调整为指定大小',
         example: '把日期改成14号字',
         execute: (m) => ({ type:'fontsize', element:m[1].trim(), size:m[2]+'px' })
       },
-      // 5. 选中文本
+      // 5. 选中文本（优先级最低，仅作为兜底）
       {
         id: 'select',
         name: '选中元素',
         icon: 'fa-mouse-pointer',
         tag: 'action',
         patterns: [
-          /选中(.+)/, /选择(.+)/, /选(.+)/, /(.*)/,
+          /选中(.+)/, /选择(.+)/,
         ],
         desc: '在页面中选中指定元素',
         example: '选中讨论稿',
         execute: (m) => ({ type:'select', keyword:m[1].trim() }),
-        // select 是兜底匹配，优先级最低
         priority: -1
       },
-      // 6. 撤销
+      // 6. 撤销（最高优先级，短关键词容易被其他模式误匹配）
       {
         id: 'undo',
         name: '撤销操作',
         icon: 'fa-rotate-left',
         tag: 'action',
-        patterns: [/撤销/, /回退/, /撤消/, /取消这一步/, /上一步/],
+        priority: 10,
+        patterns: [/^(撤销|回退|撤消|取消这一步|上一步)$/],
         desc: '撤销最近一次操作',
         example: '撤销',
         execute: () => ({ type:'undo' })
       },
-      // 7. 改背景色
+      // 7. 改背景色（优先级高于替换和颜色）
       {
         id: 'bgcolor',
         name: '改背景色',
         icon: 'fa-fill-drip',
         tag: 'style',
+        priority: 6,
         patterns: [
-          /把(.+?)(?:的?背景)(?:改|换|设)成(.+色?)/,
-          /(.+?)背景(.+色?)/,
+          /把(.+?)(?:的?背景)(?:改|换|设)成(.+)/,
+          /(.+?)背景(.+色)/,
         ],
         desc: '将元素背景颜色修改为指定颜色',
         example: '把标题背景改成蓝色',
@@ -1169,6 +1400,7 @@
         name: '加粗/取消加粗',
         icon: 'fa-bold',
         tag: 'style',
+        priority: 5,
         patterns: [
           /把(.+?)加粗/, /(.+?)加粗/, /加粗(.+)/,
           /把(.+?)取消加粗/, /(.+?)不要加粗/, /取消(.+?)加粗/,
@@ -1205,7 +1437,7 @@
         const last = e.results[e.results.length - 1];
         const transcript = last[0].transcript.trim();
         if (last.isFinal) {
-          processCommand(transcript);
+          processCommand(transcript, 'voice');
         } else {
           updateVoiceStatus('聆听中: ' + transcript + '...');
         }
@@ -1225,7 +1457,7 @@
     }
 
     // 解析并执行命令
-    function processCommand(text) {
+    function processCommand(text, source) {
       console.log('[Voice] 识别到:', text);
       updateVoiceStatus('识别: ' + text);
 
@@ -1240,6 +1472,13 @@
               if (parsed) {
                 parsed.rawText = text;   // 保留原始文本
                 showToast('💬 "' + text + '"', 'info');
+                addVoiceLog('recognize', text, true, '指令已识别: ' + (cmd.name || cmd.id || ''));
+                // 同步到命令助手聊天面板（区分语音和文字来源）
+                if (source === 'voice') {
+                  addCmdMessage('user', '🎤 ' + text);
+                } else if (source === 'text') {
+                  addCmdMessage('user', '⌨️ ' + text);
+                }
                 VoiceExecutor.execute(parsed);
                 return;
               }
@@ -1250,6 +1489,8 @@
         }
       }
       showToast('❓ 未识别的指令: "' + text + '"，请使用规定格式', 'error');
+      addVoiceLog('unknown', text, false, '未识别的指令，请使用规定格式');
+      addCmdMessage('error', '❓ 未识别的指令: "' + text + '"', text);
     }
 
     function start() {
@@ -1295,7 +1536,7 @@
       if (wrap) wrap.classList.add('show');
     }
 
-    return { start, stop, toggle, isListening: () => isListening, colorMap, init };
+return { start, stop, toggle, isListening: () => isListening, colorMap, init, processCommand };
   })();
 
   /* ═══════════════════════════════════════════════════════════════
@@ -1321,40 +1562,90 @@
       }
     },
 
-    // 在iframe中搜索包含指定文本的元素
+    // 在iframe中搜索包含指定文本的元素（增强版）
     findElement: function(keyword, doc) {
       if (!doc) doc = els.previewFrame.contentDocument;
+      if (!doc || !doc.body) return null;
+
       const all = doc.querySelectorAll('body *');
-      // 策略1: 精确文本匹配
-      for (const el of all) {
-        if (el.children.length === 0 && el.textContent.trim() === keyword) return el;
+      // 过滤掉编辑器注入的元素
+      const visible = Array.from(all).filter(el =>
+        el.id !== 'html-editor-injected'
+      );
+
+      // 策略0: 优先搜索当前选中的元素（精确匹配）
+      if (currentEl && currentEl.textContent.trim() === keyword.trim()) return currentEl;
+
+      // 策略1: 精确文本匹配（叶子节点优先）
+      for (const el of visible) {
+        if (el.children.length === 0 && el.textContent.trim() === keyword.trim()) return el;
       }
-      // 策略2: 包含文本匹配
-      for (const el of all) {
-        if (el.textContent.includes(keyword)) return el;
+
+      // 策略2: 去除标点/空格后精确匹配
+      const normalize = s => s.replace(/[\s\u3000，。、；：！？·\-\(\)（）]/g, '');
+      const kwNorm = normalize(keyword);
+      for (const el of visible) {
+        if (el.children.length === 0 && normalize(el.textContent) === kwNorm) return el;
       }
-      // 策略3: 模糊匹配（去掉空格后）
-      const kwNormal = keyword.replace(/\s/g,'');
-      for (const el of all) {
-        if (el.textContent.replace(/\s/g,'').includes(kwNormal)) return el;
+
+      // 策略3: 包含文本匹配（最短匹配优先——最精确的元素）
+      let bestMatch = null;
+      let bestLen = Infinity;
+      for (const el of visible) {
+        const text = el.textContent;
+        if (text.includes(keyword) && text.length < bestLen) {
+          bestMatch = el;
+          bestLen = text.length;
+        }
       }
+      if (bestMatch) return bestMatch;
+
+      // 策略4: 模糊匹配（去掉空格后）
+      for (const el of visible) {
+        if (normalize(el.textContent).includes(kwNorm)) return el;
+      }
+
+      // 策略5: 部分关键词匹配（支持"六月九号"匹配"6月9日"等中文数字）
+      const chineseNumMap = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9','十':'10','号':'日','月':'月','年':'年'};
+      const toArabic = s => s.replace(/[零一二三四五六七八十号]/g, c => chineseNumMap[c] || c);
+      const kwArabic = toArabic(keyword);
+      if (kwArabic !== keyword) {
+        for (const el of visible) {
+          const elArabic = toArabic(el.textContent);
+          if (elArabic.includes(kwArabic) || kwArabic.includes(elArabic)) return el;
+        }
+      }
+
       return null;
     },
 
     doReplace: function(cmd) {
       const el = this.findElement(cmd.target);
-      if (!el) { showToast('未找到 "' + cmd.target + '"', 'error'); return; }
+      if (!el) {
+        showToast('未找到 "' + cmd.target + '"', 'error');
+        addVoiceLog('replace', cmd.target + ' → ' + cmd.replacement, false, '未找到 "' + cmd.target + '"');
+        addCmdMessage('error', '未找到 "' + cmd.target + '"，请先选中或确认文字存在', cmd.rawText);
+        return;
+      }
       pushUndo('语音替换: ' + cmd.target + ' → ' + cmd.replacement, currentHtml);
       selectElement(el);
       el.textContent = cmd.replacement;
-      syncFromFrame(); renderPreview(); buildElementTree();
+      refreshAfterEdit();
+      syncPropertiesPanel();
       addHistory('语音替换: ' + cmd.target + ' → ' + cmd.replacement);
       showToast('✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"', 'success');
+      addVoiceLog('replace', cmd.target + ' → ' + cmd.replacement, true, '已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"');
+      addCmdMessage('system', '✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"');
     },
 
     doMove: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
-      if (!el) { showToast('请先选中元素或说出"选中'+cmd.element+'"', 'error'); return; }
+      if (!el) {
+        showToast('请先选中元素或说出"选中'+cmd.element+'"', 'error');
+        addVoiceLog('move', cmd.element, false, '请先选中元素或说出"选中'+cmd.element+'"');
+        addCmdMessage('error', '未找到 "' + cmd.element + '"，请先选中该元素', cmd.rawText);
+        return;
+      }
       pushUndo('语音移动: ' + cmd.direction + ' ' + cmd.distance + 'px', currentHtml);
       if (el !== currentEl) selectElement(el);
       const [tx, ty] = this._getTranslate(el);
@@ -1367,57 +1658,94 @@
         case 'right': nx += d; break;
       }
       this._setTranslate(el, nx, ny);
-      // 同步属性面板
+      // 使用统一的刷新函数
+      refreshAfterEdit();
+      // 同步属性面板位置值
       if (els.propTopVal) els.propTopVal.value = Math.round(nx);
       if (els.propLeftVal) els.propLeftVal.value = Math.round(ny);
-      syncFromFrame(); renderPreview();
       const dirText = {down:'向下',up:'向上',left:'向左',right:'向右'}[cmd.direction];
       addHistory('语音移动: ' + dirText + ' ' + Math.round(cmd.distance) + 'px');
       showToast('✅ 已' + dirText + '移动 ' + Math.round(cmd.distance) + 'px', 'success');
+      addVoiceLog('move', dirText + ' ' + Math.round(cmd.distance) + 'px', true, '已' + dirText + '移动 ' + Math.round(cmd.distance) + 'px');
+      addCmdMessage('system', '✅ 已' + dirText + '移动 ' + Math.round(cmd.distance) + 'px');
     },
 
     doColor: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
-      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      if (!el) {
+        showToast('未找到 "' + cmd.element + '"', 'error');
+        addVoiceLog('color', cmd.element + ' → ' + cmd.color, false, '未找到 "' + cmd.element + '"');
+        addCmdMessage('error', '未找到 "' + cmd.element + '"，请先选中该元素', cmd.rawText);
+        return;
+      }
       pushUndo('语音改颜色: ' + cmd.color, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('color', cmd.color);
       showToast('✅ 颜色已改为 ' + cmd.color, 'success');
+      addVoiceLog('color', cmd.element + ' → ' + cmd.color, true, '颜色已改为 ' + cmd.color);
+      addCmdMessage('system', '✅ 颜色已改为 ' + cmd.color);
     },
 
     doBgColor: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
-      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      if (!el) {
+        showToast('未找到 "' + cmd.element + '"', 'error');
+        addVoiceLog('bgcolor', cmd.element + ' → ' + cmd.color, false, '未找到 "' + cmd.element + '"');
+        addCmdMessage('error', '未找到 "' + cmd.element + '"，请先选中该元素', cmd.rawText);
+        return;
+      }
       pushUndo('语音改背景色: ' + cmd.color, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('backgroundColor', cmd.color);
       showToast('✅ 背景色已改为 ' + cmd.color, 'success');
+      addVoiceLog('bgcolor', cmd.element + ' → ' + cmd.color, true, '背景色已改为 ' + cmd.color);
+      addCmdMessage('system', '✅ 背景色已改为 ' + cmd.color);
     },
 
     doFontSize: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
-      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      if (!el) {
+        showToast('未找到 "' + cmd.element + '"', 'error');
+        addVoiceLog('fontsize', cmd.element + ' → ' + cmd.size, false, '未找到 "' + cmd.element + '"');
+        addCmdMessage('error', '未找到 "' + cmd.element + '"，请先选中该元素', cmd.rawText);
+        return;
+      }
       pushUndo('语音改字号: ' + cmd.size, currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('fontSize', cmd.size);
       showToast('✅ 字号已改为 ' + cmd.size, 'success');
+      addVoiceLog('fontsize', cmd.element + ' → ' + cmd.size, true, '字号已改为 ' + cmd.size);
+      addCmdMessage('system', '✅ 字号已改为 ' + cmd.size);
     },
 
     doBold: function(cmd) {
       const el = currentEl || this.findElement(cmd.element);
-      if (!el) { showToast('未找到 "' + cmd.element + '"', 'error'); return; }
+      if (!el) {
+        showToast('未找到 "' + cmd.element + '"', 'error');
+        addVoiceLog('bold', cmd.element, false, '未找到 "' + cmd.element + '"');
+        addCmdMessage('error', '未找到 "' + cmd.element + '"，请先选中该元素', cmd.rawText);
+        return;
+      }
       pushUndo(cmd.bold ? '语音加粗' : '语音取消加粗', currentHtml);
       if (el !== currentEl) selectElement(el);
       updateStyle('fontWeight', cmd.bold ? '700' : '400');
       showToast('✅ ' + (cmd.bold ? '加粗' : '取消加粗'), 'success');
+      addVoiceLog('bold', cmd.element + (cmd.bold ? ' 加粗' : ' 取消加粗'), true, cmd.bold ? '加粗' : '取消加粗');
+      addCmdMessage('system', '✅ ' + (cmd.bold ? '加粗' : '取消加粗'));
     },
 
     doSelect: function(cmd) {
       const el = this.findElement(cmd.keyword);
-      if (!el) { showToast('未找到包含 "' + cmd.keyword + '" 的元素', 'error'); return; }
+      if (!el) {
+        showToast('未找到包含 "' + cmd.keyword + '" 的元素', 'error');
+        addVoiceLog('select', cmd.keyword, false, '未找到包含 "' + cmd.keyword + '" 的元素');
+        addCmdMessage('error', '未找到包含 "' + cmd.keyword + '" 的元素', cmd.rawText);
+        return;
+      }
       selectElement(el);
       showToast('✅ 已选中 "' + cmd.keyword + '"', 'success');
-      // 自动滚动到视图中
+      addVoiceLog('select', cmd.keyword, true, '已选中 "' + cmd.keyword + '"');
+      addCmdMessage('system', '✅ 已选中 "' + cmd.keyword + '"');
       el.scrollIntoView({ behavior:'smooth', block:'center' });
     },
 
@@ -1528,10 +1856,339 @@
         overlay.classList.remove('show');
       }
     });
+
+    // 语音命令历史面板 - 展开/收起
+    const voiceLogToggle = document.getElementById('voice-log-toggle');
+    const voiceLogPanel = document.getElementById('voice-log-panel');
+    const voiceLogArrow = document.getElementById('voice-log-arrow');
+    if (voiceLogToggle && voiceLogPanel) {
+      voiceLogToggle.addEventListener('click', () => {
+        const isCollapsed = voiceLogPanel.classList.toggle('collapsed');
+        if (voiceLogArrow) voiceLogArrow.classList.toggle('rotated', !isCollapsed);
+      });
+    }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     命令助手聊天面板 (Command Assistant Chat Panel)
+     功能：文字命令输入、语音命令记录、执行反馈、历史重试
+  ═══════════════════════════════════════════════════════════════ */
+
+  let cmdAssistantOpen = true;
+  let cmdMessageCount = 0;
+  let cmdUnreadCount = 0;
+
+  function initCmdAssistant() {
+    const panel = document.getElementById('cmd-assistant');
+    const header = document.getElementById('cmd-assistant-header');
+    const toggleBtn = document.getElementById('cmd-assistant-toggle');
+    const arrow = document.getElementById('cmd-assistant-arrow');
+    const body = document.getElementById('cmd-assistant-body');
+    const textInput = document.getElementById('cmd-text-input');
+    const sendBtn = document.getElementById('cmd-send-btn');
+    const voiceBtn = document.getElementById('cmd-voice-btn');
+    const clearBtn = document.getElementById('cmd-clear-history');
+    const messages = document.getElementById('cmd-assistant-messages');
+
+    // 展开/收起
+    function togglePanel() {
+      cmdAssistantOpen = !cmdAssistantOpen;
+      panel.classList.toggle('collapsed', !cmdAssistantOpen);
+      arrow.className = cmdAssistantOpen ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+      if (cmdAssistantOpen) {
+        cmdUnreadCount = 0;
+        updateBadge();
+      }
+    }
+
+    if (header) header.addEventListener('click', (e) => {
+      // 不响应按钮点击
+      if (e.target.closest('.cmd-assistant-btn')) return;
+      if (!cmdAssistantOpen) togglePanel();
+    });
+    if (toggleBtn) toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePanel();
+    });
+
+    // 文字命令输入
+    function executeTextCommand() {
+      const text = textInput.value.trim();
+      if (!text) return;
+      textInput.value = '';
+      // 显示用户消息
+      addCmdMessage('user', text);
+      // 延迟执行命令
+      setTimeout(() => {
+        if (VoiceEngine) {
+          VoiceEngine.processCommand ? VoiceEngine.processCommand(text) : processCommandPublic(text);
+        } else {
+          processCommandPublic(text);
+        }
+      }, 100);
+    }
+
+    if (sendBtn) sendBtn.addEventListener('click', executeTextCommand);
+    if (textInput) {
+      textInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          executeTextCommand();
+        }
+      });
+    }
+
+    // 语音按钮（面板内的）
+    if (voiceBtn) {
+      voiceBtn.addEventListener('click', () => {
+        if (VoiceEngine) {
+          VoiceEngine.toggle();
+          voiceBtn.classList.toggle('recording', VoiceEngine.isListening());
+        } else {
+          showToast('当前浏览器不支持语音识别', 'error');
+        }
+      });
+    }
+
+    // 清空历史
+    if (clearBtn) clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const messagesEl = document.getElementById('cmd-assistant-messages');
+      if (messagesEl) {
+        messagesEl.innerHTML = '<div class="cmd-welcome">' +
+          '<div class="cmd-welcome-icon"><i class="fas fa-wand-magic-sparkles"></i></div>' +
+          '<div class="cmd-welcome-text">👋 你好！我是命令助手</div>' +
+          '<div class="cmd-welcome-desc">你可以通过语音或文字下达编辑指令，所有操作记录都会显示在这里</div>' +
+          '<div class="cmd-welcome-examples">' +
+            '<div class="cmd-example-chip" data-cmd="把第6稿改成第7稿"><i class="fas fa-text"></i> 替换文字</div>' +
+            '<div class="cmd-example-chip" data-cmd="把标题改成红色"><i class="fas fa-palette"></i> 改颜色</div>' +
+            '<div class="cmd-example-chip" data-cmd="把标题加粗"><i class="fas fa-bold"></i> 加粗</div>' +
+            '<div class="cmd-example-chip" data-cmd="撤销"><i class="fas fa-rotate-left"></i> 撤销</div>' +
+          '</div>' +
+        '</div>';
+        bindExampleChips();
+      }
+      cmdMessageCount = 0;
+      cmdUnreadCount = 0;
+      updateBadge();
+      showToast('命令记录已清空', 'info');
+    });
+
+    // 绑定示例芯片点击
+    bindExampleChips();
+  }
+
+  function bindExampleChips() {
+    document.querySelectorAll('.cmd-example-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const cmd = chip.dataset.cmd;
+        if (cmd) {
+          const textInput = document.getElementById('cmd-text-input');
+          if (textInput) textInput.value = cmd;
+          // 直接执行
+          addCmdMessage('user', cmd);
+          setTimeout(() => processCommandPublic(cmd), 100);
+        }
+      });
+    });
+  }
+
+  function updateBadge() {
+    const badge = document.getElementById('cmd-assistant-badge');
+    if (badge) {
+      if (cmdUnreadCount > 0) {
+        badge.style.display = 'flex';
+        badge.textContent = cmdUnreadCount;
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * 向命令助手聊天面板添加一条消息
+   * @param {'user'|'system'|'error'} role - 消息角色
+   * @param {string} text - 消息内容
+   * @param {string} [retryCmd] - 可选：重试命令文本
+   */
+  function addCmdMessage(role, text, retryCmd) {
+    const container = document.getElementById('cmd-assistant-messages');
+    if (!container) return;
+
+    // 移除欢迎消息（如果有）
+    const welcome = container.querySelector('.cmd-welcome');
+    if (welcome) welcome.remove();
+
+    cmdMessageCount++;
+    if (!cmdAssistantOpen && role !== 'user') {
+      cmdUnreadCount++;
+      updateBadge();
+    }
+
+    const iconMap = {
+      user: 'fa-user',
+      system: 'fa-check',
+      error: 'fa-xmark'
+    };
+
+    const msg = document.createElement('div');
+    msg.className = 'cmd-msg ' + role;
+    const time = new Date().toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+
+    let retryHtml = '';
+    if (retryCmd) {
+      retryHtml = '<div class="cmd-msg-retry" data-retry-cmd="' + escapeHtml(retryCmd) + '"><i class="fas fa-rotate-right"></i> 重试</div>';
+    }
+
+    msg.innerHTML =
+      '<div class="cmd-msg-avatar"><i class="fas ' + iconMap[role] + '"></i></div>' +
+      '<div>' +
+        '<div class="cmd-msg-bubble">' + escapeHtml(text) + '</div>' +
+        retryHtml +
+        '<div class="cmd-msg-time">' + time + '</div>' +
+      '</div>';
+
+    container.appendChild(msg);
+
+    // 绑定重试按钮
+    const retryBtn = msg.querySelector('.cmd-msg-retry');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        const cmd = retryBtn.dataset.retryCmd;
+        if (cmd) {
+          addCmdMessage('user', cmd);
+          setTimeout(() => processCommandPublic(cmd), 100);
+        }
+      });
+    }
+
+    // 自动滚动到底部
+    container.scrollTop = container.scrollHeight;
+  }
+
+  /**
+   * 公开的命令处理入口（供文字输入和重试调用）
+   */
+  function processCommandPublic(text) {
+    if (!text || !text.trim()) return;
+    // 优先使用 VoiceEngine 内部的 processCommand
+    if (VoiceEngine && VoiceEngine.processCommand) {
+      VoiceEngine.processCommand(text, 'text');
+      return;
+    }
+    // 降级：使用本地 commandPatterns
+    const sorted = [...commandPatterns].sort((a,b) => (b.priority||0)-(a.priority||0));
+    for (const cmd of sorted) {
+      for (const pattern of cmd.patterns) {
+        const m = text.match(pattern);
+        if (m) {
+          try {
+            const parsed = cmd.execute(m);
+            if (parsed) {
+              parsed.rawText = text;
+              addVoiceLog('recognize', text, true, '指令已识别: ' + (cmd.name || cmd.id || ''));
+              VoiceExecutor.execute(parsed);
+              return;
+            }
+          } catch(err) {
+            console.error('[CmdAssistant] 解析命令失败:', err);
+          }
+        }
+      }
+    }
+    showToast('❓ 未识别的指令: "' + text + '"', 'error');
+    addVoiceLog('unknown', text, false, '未识别的指令');
+    addCmdMessage('error', '未识别的指令: "' + text + '"\n支持格式：把XX改成YY / 把XX改成红色 / 撤销 等', text);
+  }
+
+  // 暴露 commandPatterns 给 processCommandPublic 使用
+  // （它们在 VoiceEngine IIFE 内部，需要重新声明引用）
+  const commandPatterns = [
+    // 1. 替换文字
+    {
+      id: 'replace', name: '替换文字', priority: 2,
+      patterns: [/把(.+?)(?:改成|换成)(.+)/, /将(.+?)(?:改成|换成)(.+)/, /把(.+?)(?:改为|换为)(.+)/, /将(.+?)(?:改为|换为)(.+)/],
+      execute: (m) => ({ type:'replace', target:m[1].trim(), replacement:m[2].trim() })
+    },
+    // 2. 移动元素
+    {
+      id: 'move', name: '移动元素', priority: 7,
+      patterns: [
+        /把(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
+        /将(.+?)(?:向|往)?(下|上|左|右|向下|向上|向左|向右|往下|往上|往左|往右)(?:移|挪|移动|调整)(\d+(?:\.\d+)?)(?:个|格)?(.{0,3})/,
+      ],
+      execute: (m) => {
+        const dirMap = {'下':'down','上':'up','左':'left','右':'right','向下':'down','向上':'up','向左':'left','向右':'right','往下':'down','往上':'up','往左':'left','往右':'right'};
+        const unitMap = {'厘米':37.8,'cm':37.8,'毫米':3.78,'mm':3.78,'像素':1,'px':1,'点':1.33,'pt':1.33};
+        const el = m[1].trim();
+        const dir = dirMap[m[2].trim()] || 'down';
+        const num = parseFloat(m[3]);
+        const unit = unitMap[(m[4]||'厘米').trim()] || 37.8;
+        return { type:'move', element:el, direction:dir, distance:num * unit };
+      }
+    },
+    // 3. 改颜色
+    {
+      id: 'color', name: '改颜色', priority: 4,
+      patterns: [
+        /把(.+?)(?:的?颜色)(?:改|换|设)成(.+)/,
+        /将(.+?)(?:的?颜色)(?:改|换|设)成(.+)/,
+        /把(.+?)(?:改成|换成)(红|绿|蓝|黄|紫|橙|粉|白|黑|灰|金|银)色?$/,
+        /把(.+?)(?:改成|换成)(.+色)$/,
+      ],
+      execute: (m) => {
+        const colorMap = {'红':'#ef4444','红色':'#ef4444','绿':'#22c55e','绿色':'#22c55e','蓝':'#3b82f6','蓝色':'#3b82f6','黄':'#eab308','黄色':'#eab308','紫':'#8b5cf6','紫色':'#8b5cf6','橙':'#f97316','橙色':'#f97316','粉':'#ec4899','粉色':'#ec4899','白':'#ffffff','白色':'#ffffff','黑':'#000000','黑色':'#000000','灰':'#6b7280','灰色':'#6b7280','金':'#fbbf24','金色':'#fbbf24','银':'#9ca3af','银色':'#9ca3af'};
+        const el = m[1].trim();
+        const colorRaw = m[2].trim();
+        const color = colorMap[colorRaw] || colorMap[colorRaw.replace('色','')] || colorRaw;
+        return { type:'color', element:el, color:color };
+      }
+    },
+    // 4. 改字号
+    {
+      id: 'fontsize', name: '改字号', priority: 5,
+      patterns: [
+        /把(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
+        /将(.+?)(?:的字号|字体大小|大小)(?:改|换|设|调整)成?(\d+)(?:号|px|像素|点|pt)?/,
+        /把(.+?)(?:改成|换成)(\d+)(?:号字|号|px|像素)/,
+      ],
+      execute: (m) => ({ type:'fontsize', element:m[1].trim(), size:m[2]+'px' })
+    },
+    // 5. 选中文本
+    {
+      id: 'select', name: '选中元素', priority: -1,
+      patterns: [/选中(.+)/, /选择(.+)/],
+      execute: (m) => ({ type:'select', keyword:m[1].trim() })
+    },
+    // 6. 撤销
+    {
+      id: 'undo', name: '撤销操作', priority: 10,
+      patterns: [/^(撤销|回退|撤消|取消这一步|上一步)$/],
+      execute: () => ({ type:'undo' })
+    },
+    // 7. 改背景色
+    {
+      id: 'bgcolor', name: '改背景色', priority: 6,
+      patterns: [/把(.+?)(?:的?背景)(?:改|换|设)成(.+)/, /(.+?)背景(.+色)/],
+      execute: (m) => {
+        const colorMap = {'红':'#ef4444','红色':'#ef4444','绿':'#22c55e','绿色':'#22c55e','蓝':'#3b82f6','蓝色':'#3b82f6','黄':'#eab308','黄色':'#eab308','紫':'#8b5cf6','紫色':'#8b5cf6','橙':'#f97316','橙色':'#f97316','粉':'#ec4899','粉色':'#ec4899','白':'#ffffff','白色':'#ffffff','黑':'#000000','黑色':'#000000','灰':'#6b7280','灰色':'#6b7280','金':'#fbbf24','金色':'#fbbf24','银':'#9ca3af','银色':'#9ca3af'};
+        return { type:'bgcolor', element:m[1].trim(), color: colorMap[m[2].trim()] || colorMap[m[2].trim().replace('色','')] || m[2].trim() };
+      }
+    },
+    // 8. 设置加粗
+    {
+      id: 'bold', name: '加粗/取消加粗', priority: 5,
+      patterns: [/把(.+?)加粗/, /(.+?)加粗/, /加粗(.+)/, /把(.+?)取消加粗/, /(.+?)不要加粗/, /取消(.+?)加粗/],
+      execute: (m) => {
+        const isCancel = /取消|不要|去掉/.test(m[0]);
+        return { type:'bold', element:m[1].trim(), bold:!isCancel };
+      }
+    },
+  ];
 
   /* ── 启动 ── */
   init();
   bindVoiceEvents();
+  initCmdAssistant();
   if (VoiceEngine) VoiceEngine.init();
 })();

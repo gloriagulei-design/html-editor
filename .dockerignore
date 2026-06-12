@@ -1,6 +1,7 @@
 # 版本控制
 .git
 .gitignore
+.github
 
 # IDE
 .vscode
@@ -17,3 +18,22 @@ Thumbs.db
 # README
 README.md
 docs
+
+# 依赖（容器内安装）
+node_modules
+
+# 临时文件
+.tmp
+tmp
+temp
+*.tmp
+
+# 构建产物
+dist
+build
+
+# skill 解压目录
+fanhi-html-to-pdf-skill
+
+# 原始 zip
+*.zip

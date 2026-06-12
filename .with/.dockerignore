@@ -1,0 +1,40 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (will be installed in container)
+node_modules
+
+# Build artifacts
+.tmp
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Test files
+test
+tests
+
+# Documentation
+README.md
+docs
+
+# CI/CD
+.github
+
+# Environment
+.env
+.env.local
+
+# Docker
+.with
