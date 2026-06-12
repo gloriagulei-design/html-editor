@@ -1420,6 +1420,20 @@ ${bodyContent}
         priority: 2,
         execute: (m) => ({ type:'replace', target:m[1].trim(), replacement:m[2].trim() })
       },
+      // 1b. 简化替换：省略目标，默认替换当前选中元素（如"改成2025年"、"换成初稿"）
+      {
+        id: 'replace_selected',
+        name: '替换选中文字',
+        icon: 'fa-text',
+        tag: 'replace',
+        patterns: [
+          /^(?:改成|换成|改为|换为)(.+)$/,
+        ],
+        desc: '将当前选中元素的文字替换为新内容',
+        example: '改成2025年',
+        priority: 1,
+        execute: (m) => ({ type:'replace_selected', replacement:m[1].trim() })
+      },
       // 2. 移动元素: "把[元素]往[方向]移[数值][单位]"
       {
         id: 'move',
@@ -1686,6 +1700,7 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
 
       switch(cmd.type) {
         case 'replace': this.doReplace(cmd); break;
+        case 'replace_selected': this.doReplaceSelected(cmd); break;
         case 'move':    this.doMove(cmd); break;
         case 'color':   this.doColor(cmd); break;
         case 'bgcolor': this.doBgColor(cmd); break;
@@ -1771,6 +1786,23 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
       showToast('✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"', 'success');
       addVoiceLog('replace', cmd.target + ' → ' + cmd.replacement, true, '已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"');
       addCmdMessage('system', '✅ 已将 "' + cmd.target + '" 改成 "' + cmd.replacement + '"');
+    },
+
+    doReplaceSelected: function(cmd) {
+      if (!currentEl) {
+        showToast('请先选中要修改的元素', 'error');
+        addCmdMessage('error', '请先在预览区点击选中要修改的元素，然后再说"改成XXX"', cmd.rawText);
+        return;
+      }
+      const oldText = currentEl.textContent.trim();
+      pushUndo('语音替换: ' + oldText + ' → ' + cmd.replacement, currentHtml);
+      currentEl.textContent = cmd.replacement;
+      refreshAfterEdit();
+      syncPropertiesPanel();
+      addHistory('语音替换: ' + oldText + ' → ' + cmd.replacement);
+      showToast('✅ 已将 "' + oldText + '" 改成 "' + cmd.replacement + '"', 'success');
+      addVoiceLog('replace', oldText + ' → ' + cmd.replacement, true, '已将 "' + oldText + '" 改成 "' + cmd.replacement + '"');
+      addCmdMessage('system', '✅ 已将 "' + oldText + '" 改成 "' + cmd.replacement + '"');
     },
 
     doMove: function(cmd) {
@@ -2095,10 +2127,11 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
           '<div class="cmd-welcome-text">👋 你好！我是命令助手</div>' +
           '<div class="cmd-welcome-desc">你可以通过语音或文字下达编辑指令，所有操作记录都会显示在这里</div>' +
           '<div class="cmd-welcome-examples">' +
-            '<div class="cmd-example-chip" data-cmd="把第6稿改成第7稿"><i class="fas fa-text"></i> 替换文字</div>' +
-            '<div class="cmd-example-chip" data-cmd="把标题改成红色"><i class="fas fa-palette"></i> 改颜色</div>' +
-            '<div class="cmd-example-chip" data-cmd="把标题加粗"><i class="fas fa-bold"></i> 加粗</div>' +
-            '<div class="cmd-example-chip" data-cmd="撤销"><i class="fas fa-rotate-left"></i> 撤销</div>' +
+'<div class="cmd-example-chip" data-cmd="把第6稿改成第7稿"><i class="fas fa-text"></i> 替换文字</div>' +
+'<div class="cmd-example-chip" data-cmd="改成2025年"><i class="fas fa-pen"></i> 改选中文字</div>' +
+'<div class="cmd-example-chip" data-cmd="把标题改成红色"><i class="fas fa-palette"></i> 改颜色</div>' +
+'<div class="cmd-example-chip" data-cmd="把标题加粗"><i class="fas fa-bold"></i> 加粗</div>' +
+'<div class="cmd-example-chip" data-cmd="撤销"><i class="fas fa-rotate-left"></i> 撤销</div>' +
           '</div>' +
         '</div>';
         bindExampleChips();
@@ -2244,6 +2277,12 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
       id: 'replace', name: '替换文字', priority: 2,
       patterns: [/把(.+?)(?:改成|换成)(.+)/, /将(.+?)(?:改成|换成)(.+)/, /把(.+?)(?:改为|换为)(.+)/, /将(.+?)(?:改为|换为)(.+)/],
       execute: (m) => ({ type:'replace', target:m[1].trim(), replacement:m[2].trim() })
+    },
+    // 1b. 简化替换：省略目标，默认替换当前选中元素
+    {
+      id: 'replace_selected', name: '替换选中文字', priority: 1,
+      patterns: [/^(?:改成|换成|改为|换为)(.+)$/],
+      execute: (m) => ({ type:'replace_selected', replacement:m[1].trim() })
     },
     // 2. 移动元素
     {
