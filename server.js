@@ -736,8 +736,21 @@ app.post('/api/html-to-pdf', async (req, res) => {
 });
 
 /**
+ * GET /health
+ * Docker 健康检查（兼容标准路径）
+ */
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    chromePath: CHROME_PATH,
+    chromeAvailable: existsSync(CHROME_PATH),
+    uptime: process.uptime()
+  });
+});
+
+/**
  * GET /api/health
- * 健康检查
+ * 健康检查（API路径）
  */
 app.get('/api/health', (req, res) => {
   res.json({

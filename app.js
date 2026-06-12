@@ -1609,7 +1609,7 @@ ${bodyContent}
     // 解析并执行命令
     function processCommand(text, source) {
       console.log('[Voice] 识别到:', text);
-      updateVoiceStatus('识别: ' + text);
+      updateVoiceStatus('识别: ' + text, 3000);
 
       // 按优先级排序尝试匹配
       const sorted = [...commandPatterns].sort((a,b) => (b.priority||0)-(a.priority||0));
@@ -1686,16 +1686,40 @@ ${bodyContent}
       // 更新面板内的语音状态条
       const statusBar = els.voiceStatusBar;
       if (statusBar) {
-        statusBar.style.display = active ? 'flex' : 'none';
+        // 如果语音停止但有自动隐藏计时器正在倒计时（如"识别: xxx"提示），
+        // 不要立即隐藏，让计时器自然处理，否则用户看不到识别结果
+        if (!active && _voiceStatusTimer) {
+          // 保持显示，等计时器自动隐藏
+        } else {
+          statusBar.style.display = active ? 'flex' : 'none';
+        }
       }
     }
 
     // 更新语音状态文本
-    function updateVoiceStatus(text) {
+    let _voiceStatusTimer = null;
+    function updateVoiceStatus(text, autoHideDelay) {
       const el = els.voiceStatusText;
       if (el) el.textContent = text;
       const bar = els.voiceStatusBar;
       if (bar) bar.style.display = 'flex';
+      // 清除之前的定时器
+      if (_voiceStatusTimer) { clearTimeout(_voiceStatusTimer); _voiceStatusTimer = null; }
+      // 如果指定了自动隐藏延迟（毫秒），到时自动隐藏状态条
+      if (typeof autoHideDelay === 'number' && autoHideDelay > 0) {
+        _voiceStatusTimer = setTimeout(() => {
+          if (bar) bar.style.display = 'none';
+          _voiceStatusTimer = null;
+          // 同步：如果语音已停止但按钮状态还残留，也一并清理
+          if (!isListening) {
+            const btn = document.getElementById('btn-ai-assistant');
+            if (btn && btn.classList.contains('active')) {
+              btn.classList.remove('active');
+              btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> 助手';
+            }
+          }
+        }, autoHideDelay);
+      }
     }
 
 return { start, stop, toggle, isListening: () => isListening, colorMap, init, processCommand };
@@ -2008,6 +2032,9 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
           panel.classList.remove('collapsed');
           cmdAssistantOpen = true;
           if (els.aiAssistantArrow) els.aiAssistantArrow.className = 'fas fa-chevron-down';
+          // 收起右侧属性面板避免遮挡
+          const rightSidebar = document.getElementById('sidebar-right');
+          if (rightSidebar) rightSidebar.style.display = 'none';
         }
         VoiceEngine.toggle();
       });
@@ -2073,6 +2100,9 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
     if (panel) {
       panel.classList.add('show');
       panel.classList.remove('collapsed');
+      // 面板默认显示时收起右侧属性面板避免遮挡
+      const rightSidebar = document.getElementById('sidebar-right');
+      if (rightSidebar) rightSidebar.style.display = 'none';
     }
     cmdAssistantOpen = true;
     if (els.aiAssistantArrow) els.aiAssistantArrow.className = 'fas fa-chevron-down';
@@ -2102,6 +2132,9 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
     if (closeBtn) closeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (panel) panel.classList.remove('show');
+      // 恢复右侧属性面板
+      const rightSidebar = document.getElementById('sidebar-right');
+      if (rightSidebar) rightSidebar.style.display = '';
     });
 
     // 文字命令输入
