@@ -266,6 +266,15 @@ const PDF_PRINT_OVERRIDE_CSS = `
     min-height: auto !important;
     float: none !important;
     position: relative !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  /* 强制保留所有元素的背景色、渐变、阴影、边框 */
+  *, *::before, *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
   }
 `;
 
@@ -339,23 +348,29 @@ async function createRenderedPage(htmlContent, options = {}) {
   }
   await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
 
-  // Step1: 展开隐藏内容 + 检测并设置背景色
-  const bgColor = await page.evaluate(() => {
-    const cssVar = getComputedStyle(document.documentElement)
-      .getPropertyValue('--bg').trim();
-    return cssVar || getComputedStyle(document.body || document.documentElement)
-      .backgroundColor || '#ffffff';
+  // Step1: 注入背景色和打印颜色保留CSS（用CSS注入代替直接修改DOM style，避免颜色格式问题）
+  await page.evaluate(() => {
+    const style = document.createElement('style');
+    style.id = 'pdf-bg-override';
+    style.textContent = `
+      html, body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+    `;
+    document.head.appendChild(style);
+    // 同时设置 DOM style 确保截图时背景色生效
+    const htmlBg = getComputedStyle(document.documentElement).backgroundColor;
+    const bodyBg = getComputedStyle(document.body).backgroundColor;
+    // 如果 html 或 body 没有背景色，强制设为白色（避免截图时背景透明）
+    if (!htmlBg || htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent') {
+      document.documentElement.style.backgroundColor = '#ffffff';
+    }
+    if (!bodyBg || bodyBg === 'rgba(0, 0, 0, 0)' || bodyBg === 'transparent') {
+      document.body.style.backgroundColor = '#ffffff';
+    }
   });
-
-  // 设置背景色和打印颜色保留
-  await page.evaluate((bg) => {
-    document.documentElement.style.backgroundColor = bg;
-    document.documentElement.style.webkitPrintColorAdjust = 'exact';
-    document.documentElement.style.printColorAdjust = 'exact';
-    document.body.style.backgroundColor = bg;
-    document.body.style.webkitPrintColorAdjust = 'exact';
-    document.body.style.printColorAdjust = 'exact';
-  }, bgColor);
 
   // 展开隐藏内容（如折叠面板等）
   await page.evaluate(() => {
@@ -366,25 +381,13 @@ async function createRenderedPage(htmlContent, options = {}) {
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step2: 测量内容高度 + 添加底部填充
+  // Step2: 测量内容高度
   let contentHeight = await page.evaluate(() => Math.max(
     document.documentElement.scrollHeight,
     document.body ? document.body.scrollHeight : 0
   ));
 
-  // 添加底部填充确保背景色覆盖完整
-  await page.evaluate((bg, vpWidth) => {
-    const filler = document.createElement('div');
-    filler.style.cssText = `height:2px;width:${vpWidth}px;background:${bg};`;
-    document.body.appendChild(filler);
-  }, bgColor, viewport.width);
-
-  contentHeight = await page.evaluate(() => Math.max(
-    document.documentElement.scrollHeight,
-    document.body ? document.body.scrollHeight : 0
-  ));
-
-  return { page, contentHeight, bgColor, viewport };
+  return { page, contentHeight, viewport };
 }
 
 /**
@@ -462,25 +465,36 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
 /**
  * 截图模式 - 单页版本
  * 整页截图 → 嵌入单页PDF
+ * 
+ * 关键：保持 viewport 高度为手机屏高度（不改为 contentHeight），
+ * 避免使用 100vh / height:100% 的元素被拉伸变形。
+ * fullPage: true 截图会自动滚动页面捕获全部内容。
+ * PDF 尺寸从截图 PNG 的实际像素尺寸精确计算。
  */
 async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
-  // 设置视口为内容完整高度
+  // ★ 保持 viewport 为手机屏尺寸，仅设置 deviceScaleFactor 为高清
   await page.setViewport({
     width: viewport.width,
-    height: contentHeight,
+    height: viewport.height,  // ★ 使用原始手机屏高度，不用 contentHeight
     deviceScaleFactor: scale
   });
   await new Promise(r => setTimeout(r, 500)); // 等待重排完成
 
-  // 全页截图
+  // ★ 全页截图：fullPage=true 会自动滚动截取全部内容，且不改变 viewport
   const screenshotBuffer = await page.screenshot({
     type: 'png',
     fullPage: true
   });
 
-  // 创建PDF：CSS像素 → pt (96 DPI → 72 DPI: 1px = 0.75pt)
-  const pdfW = viewport.width * 0.75;
-  const pdfH = contentHeight * 0.75;
+  // ★ 从 PNG 实际像素尺寸反算 CSS 像素尺寸（除以 deviceScaleFactor）
+  // puppeteer screenshot 的 PNG 宽度 = viewport.width * scale
+  // puppeteer screenshot 的 PNG 高度 = contentHeight * scale
+  const imgCssWidth = viewport.width;   // CSS 像素宽
+  const imgCssHeight = contentHeight;   // CSS 像素高（截图实际捕获的内容高度）
+
+  // CSS像素 → PDF pt (96 DPI → 72 DPI: 1px = 0.75pt)
+  const pdfW = imgCssWidth * 0.75;
+  const pdfH = imgCssHeight * 0.75;
 
   const pdfDoc = await PDFDocument.create();
   const img = await pdfDoc.embedPng(screenshotBuffer);
@@ -494,7 +508,7 @@ async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
   const pdfBuffer = await pdfDoc.save();
   const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
 
-  console.log(`✅ [截图模式-单页] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt`);
+  console.log(`✅ [截图模式-单页] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt (CSS: ${imgCssWidth}x${imgCssHeight}px, scale: ${scale}x)`);
 
   return {
     buffer: Buffer.from(pdfBuffer),
@@ -508,17 +522,22 @@ async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
 /**
  * 截图模式 - 分页版本
  * 将超长内容分段截图 → 每段嵌入PDF的一页
+ * 
+ * 关键：保持 viewport 高度为手机屏高度，通过 scroll + clip 分段截取，
+ * 避免改变 viewport 高度导致 100vh / height:100% 元素变形。
  */
 async function _screenshotPaged(page, contentHeight, viewport, scale) {
-  const pageHeight = MAX_SINGLE_PAGE_HEIGHT_PX;
-  const totalPages = Math.ceil(contentHeight / pageHeight);
+  const phoneScreenH = viewport.height; // 手机屏高度（如 844px）
+  // 每段截图高度：以手机屏高度为单位，但不超过 Chromium 截图安全上限
+  const SEGMENT_HEIGHT = Math.min(phoneScreenH * 4, MAX_SINGLE_PAGE_HEIGHT_PX);
+  const totalPages = Math.ceil(contentHeight / SEGMENT_HEIGHT);
 
-  console.log(`📄 分页截图: 总高度 ${contentHeight}px, 每页 ${pageHeight}px, 共 ${totalPages} 页`);
+  console.log(`📄 分页截图: 总高度 ${contentHeight}px, 每段 ${SEGMENT_HEIGHT}px, 共 ${totalPages} 页`);
 
-  // 先恢复视口高度为窗口高度（用于clip截图）
+  // ★ 保持 viewport 为手机屏尺寸（不改变高度！）
   await page.setViewport({
     width: viewport.width,
-    height: Math.min(pageHeight, contentHeight),
+    height: phoneScreenH,
     deviceScaleFactor: scale
   });
   await new Promise(r => setTimeout(r, 500));
@@ -526,12 +545,18 @@ async function _screenshotPaged(page, contentHeight, viewport, scale) {
   const pdfDoc = await PDFDocument.create();
 
   for (let i = 0; i < totalPages; i++) {
-    const clipY = i * pageHeight;
-    const clipHeight = Math.min(pageHeight, contentHeight - clipY);
+    const clipY = i * SEGMENT_HEIGHT;
+    const clipHeight = Math.min(SEGMENT_HEIGHT, contentHeight - clipY);
 
     console.log(`  📸 截取第 ${i + 1}/${totalPages} 页: y=${clipY}, height=${clipHeight}`);
 
-    // 分段截图
+    // ★ 滚动到目标位置（某些固定定位元素需要看到正确状态）
+    await page.evaluate((y) => {
+      window.scrollTo(0, y);
+    }, clipY);
+    await new Promise(r => setTimeout(r, 200)); // 等待滚动动画完成
+
+    // 分段截图（clip 不受 viewport 高度限制，可截取视口外内容）
     const screenshotBuffer = await page.screenshot({
       type: 'png',
       clip: {
@@ -542,7 +567,7 @@ async function _screenshotPaged(page, contentHeight, viewport, scale) {
       }
     });
 
-    // 嵌入PDF页面
+    // 嵌入PDF页面：CSS像素 → pt
     const pdfW = viewport.width * 0.75;
     const pdfH = clipHeight * 0.75;
 
