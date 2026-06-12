@@ -1131,7 +1131,7 @@ ${bodyContent}
       // ★ 预处理：再次规范化 HTML（确保上传后的编辑没有破坏结构）
       let fullHtml = normalizeHtml(currentHtml);
 
-      // 注入PDF渲染专用CSS：确保背景色保留、禁止分页、禁用打印媒体查询
+      // 注入PDF渲染专用CSS：确保背景色保留、禁止分页、消除100vh空白
       const pdfCssOverride = `
 <style id="pdf-render-override">
   @media print {
@@ -1153,6 +1153,7 @@ ${bodyContent}
     overflow: visible !important;
     width: 100% !important;
     height: auto !important;
+    min-height: auto !important;
   }
 </style>`;
 

@@ -372,6 +372,68 @@ async function createRenderedPage(htmlContent, options = {}) {
     }
   });
 
+  // ★ 关键修复：消除 100vh 等导致PDF空白的声明
+  // 很多HTML模板使用 height:100vh / min-height:100vh 来撑满屏幕，
+  // 但在PDF渲染时这些声明会导致大量空白，因为viewport高度(844px)远大于实际内容高度
+  // 策略：将所有使用 vh/vw 的高度声明替换为 auto，保留 px/rem/% 等值
+  // 注意：% 单位不处理，因为 html/body 改为 auto 后，子元素的 100% 自然也收缩了
+  await page.evaluate(() => {
+    // 1. 处理内联样式（style 属性）中的 vh/vw
+    document.querySelectorAll('[style]').forEach(el => {
+      const style = el.style;
+      ['height', 'minHeight', 'maxHeight'].forEach(prop => {
+        const val = style.getPropertyValue(prop);
+        if (val && (val.includes('vh') || val.includes('vw'))) {
+          style.setProperty(prop, 'auto', 'important');
+        }
+      });
+    });
+
+    // 2. 处理 <style> 标签和 <link> 引用的 CSS 中的 vh/vw 规则
+    try {
+      for (const sheet of document.styleSheets) {
+        try {
+          for (const rule of sheet.cssRules) {
+            if (rule.style) {
+              ['height', 'min-height', 'max-height'].forEach(prop => {
+                const val = rule.style.getPropertyValue(prop);
+                if (val && (val.includes('vh') || val.includes('vw'))) {
+                  rule.style.setProperty(prop, 'auto', 'important');
+                }
+              });
+            }
+            // 处理 @media 规则内的规则
+            if (rule.cssRules) {
+              for (const innerRule of rule.cssRules) {
+                if (innerRule.style) {
+                  ['height', 'min-height', 'max-height'].forEach(prop => {
+                    const val = innerRule.style.getPropertyValue(prop);
+                    if (val && (val.includes('vh') || val.includes('vw'))) {
+                      innerRule.style.setProperty(prop, 'auto', 'important');
+                    }
+                  });
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // 跨域样式表无法访问，跳过
+        }
+      }
+    } catch (e) {
+      // 安全异常，跳过
+    }
+
+    // 3. 强制 html/body 高度为 auto
+    document.documentElement.style.setProperty('height', 'auto', 'important');
+    document.documentElement.style.setProperty('min-height', 'auto', 'important');
+    document.body.style.setProperty('height', 'auto', 'important');
+    document.body.style.setProperty('min-height', 'auto', 'important');
+    document.body.style.setProperty('overflow', 'visible', 'important');
+  });
+
+  await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
+
   // 展开隐藏内容（如折叠面板等）
   await page.evaluate(() => {
     document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
@@ -381,11 +443,41 @@ async function createRenderedPage(htmlContent, options = {}) {
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step2: 测量内容高度
-  let contentHeight = await page.evaluate(() => Math.max(
-    document.documentElement.scrollHeight,
-    document.body ? document.body.scrollHeight : 0
-  ));
+  // Step2: 精确测量内容高度
+  // ★ 不使用 scrollHeight（会被 100vh/100%/flex:1 等撑大导致空白）
+  // 改用遍历所有可见元素的 getBoundingClientRect().bottom，取最大值
+  let contentHeight = await page.evaluate(() => {
+    // 方法1: 遍历所有元素，找实际内容底部边界
+    let maxBottom = 0;
+    const allElements = document.querySelectorAll('body *');
+    allElements.forEach(el => {
+      // 跳过不可见元素
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+      
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > maxBottom) {
+        maxBottom = rect.bottom;
+      }
+    });
+    
+    // 方法2: 取 scrollHeight 作为参考上限
+    const scrollH = Math.max(
+      document.documentElement.scrollHeight || 0,
+      document.body ? document.body.scrollHeight : 0
+    );
+    
+    // ★ 取两者中较小的值，确保不会因为 100vh 撑出空白
+    // 但如果 scrollHeight 比 maxBottom 小很多，说明 maxBottom 可能有问题（如fixed元素），用 scrollHeight
+    const result = Math.min(maxBottom, scrollH);
+    
+    // 加上底部 padding（20px）避免内容被截断
+    return Math.ceil(result + 20);
+  });
+  
+  // 如果内容高度小于 viewport 高度，说明内容很短，不需要额外空白
+  // 但至少保留 viewport 高度以避免布局问题
+  contentHeight = Math.max(contentHeight, 100); // 至少100px
 
   return { page, contentHeight, viewport };
 }
@@ -473,14 +565,17 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
  */
 async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
   // ★ 保持 viewport 为手机屏尺寸，仅设置 deviceScaleFactor 为高清
+  // 关键：由于前面已经注入CSS将 100vh/min-height:100vh 改为 auto，
+  // 此时的 contentHeight 已经是真实内容高度，不再包含空白
   await page.setViewport({
     width: viewport.width,
-    height: viewport.height,  // ★ 使用原始手机屏高度，不用 contentHeight
+    height: viewport.height,  // 保持手机屏高度，避免 100vh 元素被拉伸
     deviceScaleFactor: scale
   });
   await new Promise(r => setTimeout(r, 500)); // 等待重排完成
 
-  // ★ 全页截图：fullPage=true 会自动滚动截取全部内容，且不改变 viewport
+  // ★ 全页截图：fullPage=true 会自动滚动截取全部内容
+  // 由于 100vh 已被改为 auto，scrollHeight 等于真实内容高度，不会有多余空白
   const screenshotBuffer = await page.screenshot({
     type: 'png',
     fullPage: true
