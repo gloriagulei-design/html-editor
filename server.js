@@ -451,10 +451,8 @@ async function createRenderedPage(htmlContent, options = {}) {
   // PC端设计：宽度 > 500px，用检测到的宽度
   const pdfWidth = detectedWidth;
 
-  // Step3: 设置正确的 viewport，并直接设高度为预估的大值（避免100vh问题后面处理）
-  // ★ 优化：宽度设为检测到的宽度，高度设为一个较大的值（避免100vh导致内容被截断）
-  // 后续截图时会再精确调整viewport高度
-  const viewport = { width: pdfWidth, height: Math.max(DEFAULT_VIEWPORT.height, 2000) };
+  // Step3: 设置正确的 viewport 宽度，高度暂用默认值（后续截图函数会精确调整）
+  const viewport = { width: pdfWidth, height: DEFAULT_VIEWPORT.height };
   await page.setViewport(viewport);
   await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
@@ -596,51 +594,162 @@ async function convertHtmlToPdfPrint(htmlContent, options = {}) {
  * ★ 核心设计原则：PDF 打开看起来跟 HTML 一模一样
  * ★ 不做A4分页！生成一张无限长的单页PDF，内容有多长页面就有多长
  *
+ * ★★★ 大页面分段截图拼接：
+ * Chromium 截图有像素上限（宽×高 × scale² 不得超过 ~16384×16384 像素）
+ * PPT 风格的 HTML（如20个min-height:100vh的幻灯片）内容高度可达 18000+px
+ * 在 deviceScaleFactor=2 时，实际像素高度 = 18000×2 = 36000px → 超限 → "Page is too large"
+ * 解决：将长页面按段分段截图，每段不超过上限，然后用 pdf-lib 拼接为单页 PDF
+ *
  * 优势：
  * 1. 像素级精确：100% 保留背景色/渐变/阴影
  * 2. 无分页切断：不会在卡片/表格中间硬切
  * 3. 无多余空白：页面高度 = 内容实际高度
  * 4. 与HTML完全一致：所见即所得
+ * 5. 支持任意长度的内容：超长页面自动分段截图拼接
  */
 async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
   const { page, contentHeight, viewport } = await createRenderedPage(htmlContent, options);
   const scale = 2; // deviceScaleFactor，2x高清
 
   try {
-    // ★ 只需精确调整 viewport 高度为 contentHeight，宽度已在 createRenderedPage 中设好
+    // ★ 计算分段策略：Chromium 截图像素上限（宽和高各自不能超过 MAX_SCREENSHOT_DIM）
+    // 在 deviceScaleFactor=2 时，CSS 像素上限 = MAX_SCREENSHOT_DIM / 2
+    const MAX_SCREENSHOT_DIM = 16384;
+    const maxCssHeight = Math.floor(MAX_SCREENSHOT_DIM / scale) - 100; // 留100px安全余量
+
+    // 宽度也需要检查
+    const maxCssWidth = Math.floor(MAX_SCREENSHOT_DIM / scale) - 100;
+    const effectiveWidth = Math.min(viewport.width, maxCssWidth);
+
+    const needsSegmenting = contentHeight > maxCssHeight;
+    const segmentHeight = needsSegmenting ? maxCssHeight : contentHeight;
+    const segmentCount = needsSegmenting ? Math.ceil(contentHeight / segmentHeight) : 1;
+
+    console.log(`📐 截图策略: 内容=${viewport.width}x${contentHeight}px, scale=${scale}x, ` +
+      `像素上限=${MAX_SCREENSHOT_DIM}px, CSS高度上限=${maxCssHeight}px, ` +
+      `需要分段=${needsSegmenting}, 段数=${segmentCount}, 段高=${segmentHeight}px`);
+
+    // ★ 设置 viewport（使用有效宽度，防止宽度也超限）
     await page.setViewport({
-      width: viewport.width,
-      height: contentHeight,
+      width: effectiveWidth,
+      height: needsSegmenting ? segmentHeight : contentHeight,
       deviceScaleFactor: scale
     });
     await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
-    // 全页截图：viewport 高度 = contentHeight，fullPage 截图不会有多余空白
-    const screenshotBuffer = await page.screenshot({
-      type: 'jpeg',
-      quality: 95,
-      fullPage: true
-    });
+    if (!needsSegmenting) {
+      // ── 小页面：直接全页截图，简单高效 ──
+      const screenshotBuffer = await page.screenshot({
+        type: 'jpeg',
+        quality: 95,
+        fullPage: true
+      });
 
-    // CSS像素 → PDF pt (96 DPI → 72 DPI: 1px = 0.75pt)
-    const imgCssWidth = viewport.width;
-    const imgCssHeight = contentHeight;
-    const pdfW = imgCssWidth * 0.75;
-    const pdfH = imgCssHeight * 0.75;
+      const pdfW = effectiveWidth * 0.75;
+      const pdfH = contentHeight * 0.75;
 
+      const pdfDoc = await PDFDocument.create();
+      const img = await pdfDoc.embedJpg(screenshotBuffer);
+      const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
+      pdfPage.drawImage(img, { x: 0, y: 0, width: pdfW, height: pdfH });
+
+      const pdfBuffer = await pdfDoc.save();
+      const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
+
+      console.log(`✅ [截图模式-单段] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt`);
+
+      return {
+        buffer: Buffer.from(pdfBuffer),
+        pageCount: 1,
+        pageSize: { width: pdfW, height: pdfH },
+        sizeKB,
+        mode: 'screenshot'
+      };
+    }
+
+    // ── 大页面：分段截图 + 拼接到单页 PDF ──
+    const pdfW = effectiveWidth * 0.75;
+    const pdfH = contentHeight * 0.75;
     const pdfDoc = await PDFDocument.create();
-    const img = await pdfDoc.embedJpg(screenshotBuffer);
     const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
-    pdfPage.drawImage(img, {
-      x: 0, y: 0,
-      width: pdfW,
-      height: pdfH
-    });
+
+    // 从底部往上画（pdf-lib 的 y 轴从底部开始）
+    let currentY = pdfH; // PDF坐标系中当前段的底部位置
+
+    for (let i = 0; i < segmentCount; i++) {
+      const scrollY = i * segmentHeight;
+      const isLast = i === segmentCount - 1;
+      // 最后一段可能不满 segmentHeight
+      const thisSegmentCssHeight = isLast
+        ? (contentHeight - scrollY)
+        : segmentHeight;
+
+      // ★ 滚动页面到对应位置
+      await page.evaluate((y) => {
+        window.scrollTo(0, y);
+      }, scrollY);
+      // 短暂等待滚动完成和渲染
+      await new Promise(r => setTimeout(r, 100));
+
+      // ★ 如果段高度与 viewport 高度差异大，调整 viewport 以避免多余空白
+      if (thisSegmentCssHeight !== segmentHeight) {
+        await page.setViewport({
+          width: effectiveWidth,
+          height: thisSegmentCssHeight,
+          deviceScaleFactor: scale
+        });
+        await new Promise(r => setTimeout(r, 100));
+        // 滚动可能被重置，重新设置
+        await page.evaluate((y) => {
+          window.scrollTo(0, y);
+        }, scrollY);
+        await new Promise(r => setTimeout(r, 50));
+      }
+
+      // 截取当前可视区域
+      const clipRect = {
+        x: 0,
+        y: 0,
+        width: effectiveWidth,
+        height: thisSegmentCssHeight
+      };
+
+      let segBuffer;
+      try {
+        segBuffer = await page.screenshot({
+          type: 'jpeg',
+          quality: 95,
+          clip: clipRect
+        });
+      } catch (clipErr) {
+        // clip截图失败时尝试fullPage截图（降级方案）
+        console.warn(`⚠️ 段 ${i + 1} clip截图失败，尝试fullPage:`, clipErr.message);
+        segBuffer = await page.screenshot({
+          type: 'jpeg',
+          quality: 90,
+          fullPage: true
+        });
+      }
+
+      // ★ 计算本段在 PDF 中的位置（从底部往上排列）
+      const segPdfHeight = thisSegmentCssHeight * 0.75;
+      currentY -= segPdfHeight;
+
+      const img = await pdfDoc.embedJpg(segBuffer);
+      pdfPage.drawImage(img, {
+        x: 0,
+        y: currentY,
+        width: pdfW,
+        height: segPdfHeight
+      });
+
+      console.log(`  📸 段 ${i + 1}/${segmentCount}: scrollY=${scrollY}px, 高度=${thisSegmentCssHeight}px, PDF位置 y=${currentY.toFixed(0)}pt`);
+    }
 
     const pdfBuffer = await pdfDoc.save();
     const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
 
-    console.log(`✅ [截图模式-无限长单页] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt (CSS: ${imgCssWidth}x${imgCssHeight}px, scale: ${scale}x)`);
+    console.log(`✅ [截图模式-分段拼接] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt (${segmentCount}段拼接)`);
 
     return {
       buffer: Buffer.from(pdfBuffer),
