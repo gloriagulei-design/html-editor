@@ -315,9 +315,14 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
-      overflow: hidden;
+      overflow: auto;
       box-shadow: var(--shadow-lg);
       position: relative;
+      /* 居中显示手机预览 */
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 0;
     }
     .preview-frame-wrap::before {
       content: '';
@@ -328,12 +333,21 @@
       z-index: 2;
       pointer-events: none;
     }
+    /* 手机预览容器：固定宽度 + 等比缩放 */
+    .phone-preview-container {
+      width: 390px;   /* 手机屏宽度 */
+      min-height: 844px; /* 手机屏高度 */
+      flex-shrink: 0;
+      position: relative;
+      transform-origin: top center;
+      /* 缩放比例由 JS 动态计算 */
+    }
     #preview-frame {
-      width: 100%;
+      width: 390px;     /* 固定手机宽度 */
       height: 100%;
+      min-height: 844px; /* 最小高度为一个手机屏 */
       border: none;
       display: block;
-      min-height: 500px;
     }
 
     /* ────────────── Code Panel ────────────── */
@@ -846,7 +860,9 @@
       <div class="content-area" id="content-area">
         <div class="preview-wrap" id="preview-wrap">
           <div class="preview-frame-wrap">
+          <div class="phone-preview-container" id="phone-preview-container">
             <iframe id="preview-frame" sandbox="allow-same-origin allow-scripts allow-popups"></iframe>
+          </div>
           </div>
         </div>
         <div class="code-panel" id="code-panel">

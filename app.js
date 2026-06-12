@@ -33,6 +33,7 @@
 
     previewFrame    : $('#preview-frame'),
     previewWrap     : $('#preview-wrap'),
+    phonePreviewContainer: $('#phone-preview-container'),
     codePanel       : $('#code-panel'),
     contentArea     : $('#content-area'),
 
@@ -97,6 +98,10 @@
     bindEvents();
     loadDefaultContent();
     updateUndoUI();
+    // ★ 窗口大小变化时重新计算预览缩放
+    window.addEventListener('resize', () => {
+      requestAnimationFrame(updatePreviewScale);
+    });
     showToast('HTML 可视化编辑器已就绪，拖拽文件或双击文字即可编辑', 'success');
   }
 
@@ -442,17 +447,51 @@ ${bodyContent}
     showToast(`已加载「${name}」(HTML已规范化)`, 'success');
   }
 
+  /* ── 预览缩放：让手机宽度（390px）的iframe等比缩放到预览容器宽度 ── */
+  function updatePreviewScale() {
+    const container = els.previewWrap;
+    const phoneContainer = els.phonePreviewContainer;
+    const iframe = els.previewFrame;
+    if (!container || !phoneContainer || !iframe) return;
+
+    const wrapWidth = container.clientWidth - 40; // 减去 padding
+    const phoneWidth = 390; // 固定手机宽度
+
+    // 计算缩放比例（只在容器宽度小于手机宽度时缩放，否则1:1显示）
+    const scale = wrapWidth < phoneWidth ? wrapWidth / phoneWidth : 1;
+
+    phoneContainer.style.transform = `scale(${scale})`;
+    phoneContainer.style.transformOrigin = 'top center';
+
+    // ★ 动态调整 iframe 高度 = 内容实际高度
+    const iframeDoc = iframe.contentDocument;
+    if (iframeDoc && iframeDoc.body) {
+      const contentHeight = Math.max(
+        iframeDoc.documentElement.scrollHeight || 0,
+        iframeDoc.body.scrollHeight || 0,
+        844 // 最小一个手机屏高度
+      );
+      iframe.style.height = contentHeight + 'px';
+      phoneContainer.style.minHeight = (contentHeight * scale) + 'px';
+    }
+  }
+
   /* ── 预览渲染 ── */
   function renderPreview() {
     const doc = els.previewFrame.contentDocument || els.previewFrame.contentWindow?.document;
     if (!doc) return;
     doc.open(); doc.write(currentHtml); doc.close();
+    // 延迟计算缩放（等iframe内容渲染完成）
+    setTimeout(updatePreviewScale, 100);
   }
 
   function onFrameLoad() {
     const iframe = els.previewFrame;
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc || !doc.body) return;
+
+    // ★ 更新预览缩放（iframe内容加载完成后计算）
+    setTimeout(updatePreviewScale, 150);
 
     /* 注入编辑器交互样式（含拖拽移动支持） */
     let style = doc.getElementById('html-editor-injected');
