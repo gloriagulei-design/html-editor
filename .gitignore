@@ -26,3 +26,4 @@ yarn.lock
 # 忽略构建输出
 dist/
 build/
+.agent/resources
