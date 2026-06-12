@@ -787,7 +787,7 @@
         <button class="btn btn-primary" id="btn-download">
           <i class="fas fa-download"></i> 导出 HTML
         </button>
-        <button class="btn btn-accent" id="btn-download-pdf" title="一键导出不变形 PDF (基于 Chromium 渲染)">
+        <button class="btn btn-accent" id="btn-download-pdf" title="一键导出 PDF (与 HTML 视觉 100% 一致)">
           <i class="fas fa-file-pdf"></i> 导出 PDF
         </button>
         <div class="pdf-width-selector" id="pdf-width-selector" title="PDF 页面宽度">
@@ -797,10 +797,10 @@
             <option value="768">📟 平板宽度 (768px)</option>
           </select>
         </div>
-        <div class="pdf-mode-selector" id="pdf-mode-selector" title="PDF 导出模式：打印模式文字可选，截图模式颜色100%保留">
+        <div class="pdf-mode-selector" id="pdf-mode-selector" title="PDF 导出模式">
           <select id="pdf-export-mode">
-            <option value="print">🖨 打印模式</option>
-            <option value="screenshot">📸 截图模式 (保色)</option>
+            <option value="screenshot">📸 截图模式 (推荐·100%一致)</option>
+            <option value="print">🖨 打印模式 (文字可选)</option>
           </select>
         </div>
       </div>

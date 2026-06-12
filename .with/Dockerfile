@@ -27,7 +27,7 @@ RUN apk add --no-cache \
     font-noto-cjk \
     && rm -rf /var/cache/apk/*
 
-# 设置 Chromium 路径环境变量
+# 设置 Chromium 路径环境变量（Alpine chromium 包路径）
 ENV CHROME_PATH=/usr/bin/chromium-browser
 ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage --font-render-hinting=none"
 

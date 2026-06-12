@@ -3,14 +3,17 @@
  * HTML Editor 后端服务
  * - 提供静态文件服务（HTML 编辑器前端）
  * - 提供 /api/html-to-pdf 接口，基于 Puppeteer + Chromium 将 HTML 转为 PDF
- * 核心转换逻辑参考 fanhi-html-to-pdf v1.0.4 skill
+ *
+ * PDF 生成策略：
+ * - 截图模式（默认）：全页截图 → 嵌入PDF，像素级精确，100%保留颜色/渐变/阴影
+ * - 打印模式（可选）：Puppeteer page.pdf()，文字可选，但部分CSS效果可能丢失
  */
 
 import express from 'express';
 import cors from 'cors';
 import puppeteer from 'puppeteer-core';
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { PDFDocument } from 'pdf-lib';
 
@@ -22,14 +25,16 @@ const TMP_DIR = join(process.cwd(), '.tmp');
 const CHROME_PATH = process.env.CHROME_PATH ||
   (process.platform === 'darwin'
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    : '/usr/bin/ungoogled-chromium');
+    : ['/usr/bin/ungoogled-chromium', '/usr/bin/chromium-browser', '/usr/bin/chromium', '/usr/bin/google-chrome']
+      .find(p => { try { require('fs').accessSync(p); return true; } catch(_) { return false; } })
+    || '/usr/bin/ungoogled-chromium');
 
 const CHROME_ARGS = [
   '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
   '--font-render-hinting=none', '--enable-font-antialiasing',
   '--disable-software-rasterizer',
-  '--disable-features=PaintHolding',           // 防止字体延迟渲染
-  '--font-cache-shared-handle'                  // 共享字体缓存
+  '--disable-features=PaintHolding',
+  '--font-cache-shared-handle'
 ];
 
 const VIEWPORT = { width: 1400, height: 900 };
@@ -37,8 +42,12 @@ const TIMEOUTS = {
   pageLoad: 30000,
   canvasWait: 15000,
   postRender: 2000,
-  postExpand: 500
+  postExpand: 500,
+  postStyle: 300
 };
+
+// 截图模式：单页最大高度（超过则自动分页）
+const MAX_SINGLE_PAGE_HEIGHT_PX = 16384;
 
 // ====== Express 应用 ======
 const app = express();
@@ -62,13 +71,44 @@ async function getBrowser() {
     headless: 'new',
     args: CHROME_ARGS
   });
-  // 浏览器断开时清除引用
   browserInstance.on('disconnected', () => {
     console.log('⚠️ Chromium 浏览器已断开');
     browserInstance = null;
   });
   return browserInstance;
 }
+
+/**
+ * 注入关键CSS，确保打印模式下视觉一致性
+ * 1. 禁止所有分页行为
+ * 2. 强制保留背景色/渐变/阴影
+ * 3. 禁用 @media print 样式
+ */
+const PDF_PRINT_OVERRIDE_CSS = `
+  @media print {
+    * {
+      page-break-inside: auto !important;
+      break-inside: auto !important;
+      page-break-after: auto !important;
+      break-after: auto !important;
+      page-break-before: auto !important;
+      break-before: auto !important;
+    }
+  }
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  html, body {
+    overflow: visible !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    float: none !important;
+    position: relative !important;
+  }
+`;
 
 /**
  * 公共：创建 Puppeteer 页面，渲染 HTML，返回 page 和测量信息
@@ -98,7 +138,7 @@ async function createRenderedPage(htmlContent, options = {}) {
 
   await page.setViewport(viewport);
 
-  // Step0: 渲染页面（先写临时文件再用 file:// 加载）
+  // Step0: 渲染页面（先写临时文件再用 file:// 加载，确保相对资源能正确加载）
   const tmpHtmlPath = join(TMP_DIR, `pdf-${randomUUID()}.html`);
   writeFileSync(tmpHtmlPath, htmlContent, 'utf-8');
 
@@ -118,10 +158,10 @@ async function createRenderedPage(htmlContent, options = {}) {
       throw new Error('页面渲染超时，请检查 HTML 内容是否包含无法加载的资源');
     }
   } finally {
-    try { require('fs').unlinkSync(tmpHtmlPath); } catch (_) {}
+    try { unlinkSync(tmpHtmlPath); } catch (_) {}
   }
 
-  // 等 canvas 图表完成
+  // 等待 canvas 图表完成渲染
   const hasCanvas = await page.evaluate(() =>
     document.querySelectorAll('canvas').length
   );
@@ -137,7 +177,7 @@ async function createRenderedPage(htmlContent, options = {}) {
   }
   await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
 
-  // Step1: 展开隐藏内容 + 检测背景色
+  // Step1: 展开隐藏内容 + 检测并设置背景色
   const bgColor = await page.evaluate(() => {
     const cssVar = getComputedStyle(document.documentElement)
       .getPropertyValue('--bg').trim();
@@ -145,7 +185,7 @@ async function createRenderedPage(htmlContent, options = {}) {
       .backgroundColor || '#ffffff';
   });
 
-  // 多页 PDF 背景修复
+  // 设置背景色和打印颜色保留
   await page.evaluate((bg) => {
     document.documentElement.style.backgroundColor = bg;
     document.documentElement.style.webkitPrintColorAdjust = 'exact';
@@ -155,6 +195,7 @@ async function createRenderedPage(htmlContent, options = {}) {
     document.body.style.printColorAdjust = 'exact';
   }, bgColor);
 
+  // 展开隐藏内容（如折叠面板等）
   await page.evaluate(() => {
     document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
     document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
@@ -163,12 +204,13 @@ async function createRenderedPage(htmlContent, options = {}) {
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step2: 测量内容高度 + 底部 filler
+  // Step2: 测量内容高度 + 添加底部填充
   let contentHeight = await page.evaluate(() => Math.max(
     document.documentElement.scrollHeight,
     document.body ? document.body.scrollHeight : 0
   ));
 
+  // 添加底部填充确保背景色覆盖完整
   await page.evaluate((bg, vpWidth) => {
     const filler = document.createElement('div');
     filler.style.cssText = `height:2px;width:${vpWidth}px;background:${bg};`;
@@ -184,33 +226,29 @@ async function createRenderedPage(htmlContent, options = {}) {
 }
 
 /**
- * 模式 A：传统打印模式 HTML → PDF（单页长 PDF，保持文字可选）
+ * 模式 A：打印模式 HTML → PDF（单页长 PDF，保持文字可选）
+ * 
+ * 核心优化：
+ * 1. 注入全面CSS覆盖，禁止分页、强制保留背景色
+ * 2. 精确设置页面尺寸为内容实际尺寸
+ * 3. 设置 margin 为 0 避免额外空白
  */
 async function convertHtmlToPdfPrint(htmlContent, options = {}) {
   const { page, contentHeight, viewport } = await createRenderedPage(htmlContent, options);
 
   try {
-    await page.addStyleTag({
-      content: `
-        html, body { overflow: hidden !important; }
-        * {
-          page-break-inside: auto !important;
-          break-inside: auto !important;
-          page-break-after: auto !important;
-          break-after: auto !important;
-          page-break-before: auto !important;
-          break-before: auto !important;
-          -webkit-print-color-adjust: exact !important;
-          print-color-adjust: exact !important;
-        }
-      `
-    });
-    await new Promise(r => setTimeout(r, 200));
+    // 注入打印覆盖CSS
+    await page.addStyleTag({ content: PDF_PRINT_OVERRIDE_CSS });
+    await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
+    // 生成单页长PDF
     const pdfBuffer = await page.pdf({
       width: `${viewport.width}px`,
       height: `${contentHeight}px`,
-      printBackground: true
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: false,
+      displayHeaderFooter: false
     });
 
     const doc = await PDFDocument.load(pdfBuffer);
@@ -233,68 +271,148 @@ async function convertHtmlToPdfPrint(htmlContent, options = {}) {
 
 /**
  * 模式 B：截图模式 HTML → PDF（像素级精确，100% 保留背景色/渐变/阴影）
- * 先 screenshot 全页为 PNG，再用 pdf-lib 嵌入单页 PDF。
- * 文字不可选，但颜色/样式零丢失。
+ * 
+ * 核心优化：
+ * 1. 使用 deviceScaleFactor: 2 确保高清截图
+ * 2. 精确计算PDF尺寸（基于CSS像素 * 0.75转换为pt）
+ * 3. 超长内容自动分页截图，避免内存溢出
+ * 4. PNG嵌入时确保尺寸精确匹配
  */
 async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
   const { page, contentHeight, viewport } = await createRenderedPage(htmlContent, options);
+  const scale = 2; // deviceScaleFactor，2x高清
 
   try {
-    // 设置视口为内容完整高度，确保一屏截全
-    await page.setViewport({
-      width: viewport.width,
-      height: contentHeight,
-      deviceScaleFactor: 2 // 2x 高清截图
-    });
-    await new Promise(r => setTimeout(r, 500)); // 等待重排
+    // 判断是否需要分页
+    const needsPaging = contentHeight > MAX_SINGLE_PAGE_HEIGHT_PX;
 
-    // 全页截图
-    const screenshotBuffer = await page.screenshot({
-      type: 'png',
-      fullPage: true
-    });
-
-    // 用 pdf-lib 将 PNG 嵌入 PDF
-    const pdfDoc = await PDFDocument.create();
-
-    // PNG 尺寸是 CSS px * deviceScaleFactor = 物理像素
-    // PDF 使用 72 DPI，1 pt = 1/72 inch。
-    // CSS 96 DPI → 1px = 72/96 = 0.75pt。
-    // 2x 高清截图对应的实际显示尺寸仍为 viewport.width px
-    const pdfW = viewport.width * 0.75;          // pt
-    const pdfH = contentHeight * 0.75;           // pt
-
-    const img = await pdfDoc.embedPng(screenshotBuffer);
-    const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
-    pdfPage.drawImage(img, {
-      x: 0,
-      y: 0,
-      width: pdfW,
-      height: pdfH
-    });
-
-    const pdfBuffer = await pdfDoc.save();
-    const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
-
-    console.log(`✅ [截图模式] PDF 生成成功: 1 页(截图), ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt`);
-
-    return {
-      buffer: Buffer.from(pdfBuffer),
-      pageCount: 1,
-      pageSize: { width: pdfW, height: pdfH },
-      sizeKB,
-      mode: 'screenshot'
-    };
+    if (needsPaging) {
+      console.log(`📄 内容高度 ${contentHeight}px 超过单页上限 ${MAX_SINGLE_PAGE_HEIGHT_PX}px，将分页截图`);
+      return await _screenshotPaged(page, contentHeight, viewport, scale);
+    } else {
+      return await _screenshotSinglePage(page, contentHeight, viewport, scale);
+    }
   } finally {
     await page.close();
   }
 }
 
 /**
+ * 截图模式 - 单页版本
+ * 整页截图 → 嵌入单页PDF
+ */
+async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
+  // 设置视口为内容完整高度
+  await page.setViewport({
+    width: viewport.width,
+    height: contentHeight,
+    deviceScaleFactor: scale
+  });
+  await new Promise(r => setTimeout(r, 500)); // 等待重排完成
+
+  // 全页截图
+  const screenshotBuffer = await page.screenshot({
+    type: 'png',
+    fullPage: true
+  });
+
+  // 创建PDF：CSS像素 → pt (96 DPI → 72 DPI: 1px = 0.75pt)
+  const pdfW = viewport.width * 0.75;
+  const pdfH = contentHeight * 0.75;
+
+  const pdfDoc = await PDFDocument.create();
+  const img = await pdfDoc.embedPng(screenshotBuffer);
+  const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
+  pdfPage.drawImage(img, {
+    x: 0, y: 0,
+    width: pdfW,
+    height: pdfH
+  });
+
+  const pdfBuffer = await pdfDoc.save();
+  const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
+
+  console.log(`✅ [截图模式-单页] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt`);
+
+  return {
+    buffer: Buffer.from(pdfBuffer),
+    pageCount: 1,
+    pageSize: { width: pdfW, height: pdfH },
+    sizeKB,
+    mode: 'screenshot'
+  };
+}
+
+/**
+ * 截图模式 - 分页版本
+ * 将超长内容分段截图 → 每段嵌入PDF的一页
+ */
+async function _screenshotPaged(page, contentHeight, viewport, scale) {
+  const pageHeight = MAX_SINGLE_PAGE_HEIGHT_PX;
+  const totalPages = Math.ceil(contentHeight / pageHeight);
+
+  console.log(`📄 分页截图: 总高度 ${contentHeight}px, 每页 ${pageHeight}px, 共 ${totalPages} 页`);
+
+  // 先恢复视口高度为窗口高度（用于clip截图）
+  await page.setViewport({
+    width: viewport.width,
+    height: Math.min(pageHeight, contentHeight),
+    deviceScaleFactor: scale
+  });
+  await new Promise(r => setTimeout(r, 500));
+
+  const pdfDoc = await PDFDocument.create();
+
+  for (let i = 0; i < totalPages; i++) {
+    const clipY = i * pageHeight;
+    const clipHeight = Math.min(pageHeight, contentHeight - clipY);
+
+    console.log(`  📸 截取第 ${i + 1}/${totalPages} 页: y=${clipY}, height=${clipHeight}`);
+
+    // 分段截图
+    const screenshotBuffer = await page.screenshot({
+      type: 'png',
+      clip: {
+        x: 0,
+        y: clipY,
+        width: viewport.width,
+        height: clipHeight
+      }
+    });
+
+    // 嵌入PDF页面
+    const pdfW = viewport.width * 0.75;
+    const pdfH = clipHeight * 0.75;
+
+    const img = await pdfDoc.embedPng(screenshotBuffer);
+    const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
+    pdfPage.drawImage(img, {
+      x: 0, y: 0,
+      width: pdfW,
+      height: pdfH
+    });
+  }
+
+  const pdfBuffer = await pdfDoc.save();
+  const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
+  const pageCount = pdfDoc.getPageCount();
+
+  console.log(`✅ [截图模式-分页] PDF 生成成功: ${pageCount} 页, ${sizeKB} KB`);
+
+  return {
+    buffer: Buffer.from(pdfBuffer),
+    pageCount,
+    pageSize: { width: viewport.width * 0.75, height: contentHeight * 0.75 },
+    sizeKB,
+    mode: 'screenshot'
+  };
+}
+
+/**
  * 核心：HTML → PDF 转换（自动根据模式分发）
  */
 async function convertHtmlToPdf(htmlContent, options = {}) {
-  const mode = options.pdfMode || 'print';
+  const mode = options.pdfMode || 'screenshot';
   if (mode === 'screenshot') {
     return convertHtmlToPdfScreenshot(htmlContent, options);
   }
@@ -315,9 +433,9 @@ app.post('/api/html-to-pdf', async (req, res) => {
       return res.status(400).json({ error: '缺少 html 字段' });
     }
 
-    console.log(`📄 收到 PDF 转换请求，HTML 长度: ${html.length} 字符, PDF宽度: ${pdfWidth || 'auto'}, 模式: ${pdfMode || 'print'}`);
+    console.log(`📄 收到 PDF 转换请求，HTML 长度: ${html.length} 字符, PDF宽度: ${pdfWidth || 'auto'}, 模式: ${pdfMode || 'screenshot'}`);
 
-    const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'print' });
+    const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'screenshot' });
 
     // 设置响应头，返回 PDF 文件
     const pdfFilename = (filename || 'document').replace(/\.html?$/i, '') + '.pdf';
@@ -325,9 +443,10 @@ app.post('/api/html-to-pdf', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(pdfFilename)}"`);
     res.setHeader('X-PDF-Pages', result.pageCount);
     res.setHeader('X-PDF-Size-KB', result.sizeKB);
+    res.setHeader('X-PDF-Mode', result.mode);
     res.send(result.buffer);
 
-    console.log(`📤 PDF 已发送: ${pdfFilename}`);
+    console.log(`📤 PDF 已发送: ${pdfFilename} (${result.mode}模式, ${result.pageCount}页)`);
   } catch (err) {
     console.error('❌ PDF 转换失败:', err.message);
     res.status(500).json({ error: 'PDF 转换失败: ' + err.message });
@@ -353,5 +472,6 @@ app.listen(PORT, HOST, () => {
   console.log(`   地址: http://${HOST}:${PORT}`);
   console.log(`   Chromium: ${CHROME_PATH}`);
   console.log(`   静态文件: ${process.cwd()}`);
-  console.log(`   PDF 转换: POST /api/html-to-pdf\n`);
+  console.log(`   PDF 转换: POST /api/html-to-pdf`);
+  console.log(`   默认模式: 截图模式 (像素级精确)\n`);
 });

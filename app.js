@@ -1044,9 +1044,56 @@ ${currentHtml}
 </html>`;
       }
 
+      // 注入PDF渲染专用CSS：确保背景色保留、禁止分页、禁用打印媒体查询
+      const pdfCssOverride = `
+<style id="pdf-render-override">
+  @media print {
+    *, *::before, *::after {
+      page-break-inside: auto !important;
+      break-inside: auto !important;
+      page-break-after: auto !important;
+      break-after: auto !important;
+      page-break-before: auto !important;
+      break-before: auto !important;
+    }
+  }
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  html, body {
+    overflow: visible !important;
+    width: 100% !important;
+    height: auto !important;
+  }
+</style>`;
+
+      // 在</head>前插入PDF CSS覆盖
+      if (fullHtml.includes('</head>')) {
+        fullHtml = fullHtml.replace('</head>', pdfCssOverride + '\n</head>');
+      } else if (fullHtml.includes('<body')) {
+        fullHtml = fullHtml.replace('<body', pdfCssOverride + '\n<body');
+      } else {
+        fullHtml = pdfCssOverride + fullHtml;
+      }
+
+      // 移除编辑器注入的交互样式（避免选中框/悬停效果出现在PDF中）
+      fullHtml = fullHtml.replace(/<style id="html-editor-injected">[\s\S]*?<\/style>/gi, '');
+      // 移除编辑器注入的class和属性
+      fullHtml = fullHtml.replace(/\s*class="html-editor-selected"/gi, '');
+      fullHtml = fullHtml.replace(/\s*class="html-editor-hover"/gi, '');
+      fullHtml = fullHtml.replace(/\s*class="html-editor-dragging"/gi, '');
+      fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
+      fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
+
+      // 获取用户选择的导出模式，默认使用截图模式（100%视觉一致）
+      const pdfMode = (document.getElementById('pdf-export-mode') || {}).value || 'screenshot';
+      const pdfWidth = (document.getElementById('pdf-width-mode') || {}).value || 'auto';
+
       // 带超时的 fetch 请求
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120秒超时（截图模式可能较慢）
 
       let response;
       try {
@@ -1056,15 +1103,15 @@ ${currentHtml}
           body: JSON.stringify({
             html: fullHtml,
             filename: currentFileName,
-            pdfWidth: (document.getElementById('pdf-width-mode') || {}).value || 'auto',
-            pdfMode: (document.getElementById('pdf-export-mode') || {}).value || 'print'
+            pdfWidth: pdfWidth,
+            pdfMode: pdfMode
           }),
           signal: controller.signal
         });
       } catch (fetchErr) {
         clearTimeout(timeoutId);
         if (fetchErr.name === 'AbortError') {
-          throw new Error('PDF 生成超时（60秒），请检查内容是否过大');
+          throw new Error('PDF 生成超时（120秒），请检查内容是否过大');
         }
         throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
       }
@@ -1098,7 +1145,8 @@ ${currentHtml}
 
       const pages = response.headers.get('X-PDF-Pages') || '?';
       const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
-      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB)`, 'success');
+      const mode = response.headers.get('X-PDF-Mode') === 'screenshot' ? '截图' : '打印';
+      showToast(`✅ PDF 已导出: ${pdfName} (${mode}模式, ${pages}页, ${sizeKB}KB)`, 'success');
     } catch (err) {
       console.error('PDF 导出失败:', err);
       // 降级方案：使用浏览器打印功能保存为 PDF
