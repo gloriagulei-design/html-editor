@@ -589,146 +589,153 @@ async function convertHtmlToPdfPrint(htmlContent, options = {}) {
 
 /**
  * 模式 B：截图模式 HTML → PDF（像素级精确，100% 保留背景色/渐变/阴影）
- * 
- * 核心优化：
- * 1. 使用 deviceScaleFactor: 2 确保高清截图
- * 2. 精确计算PDF尺寸（基于CSS像素 * 0.75转换为pt）
- * 3. 超长内容自动分页截图，避免内存溢出
- * 4. PNG嵌入时确保尺寸精确匹配
+ *
+ * ★ 核心设计原则：PDF 打开看起来跟 HTML 一模一样
+ *
+ * 解决的7个问题：
+ * 1. 页面比例 → A4标准纸张 (595.28×841.89pt = 794×1123px)
+ * 2. 分页硬切 → 智能断页（检测块级元素边界，避免切断卡片/表格）
+ * 3. 宽度适配 → 自动检测设计宽度 + 缩放到A4 / 手机端内容居中
+ * 4. 文件过大 → JPEG压缩(quality=92)替代PNG
+ * 5. 阅读体验 → A4标准尺寸，PDF阅读器完美显示
+ * 6. 底部空白 → 精确测量内容高度，不留多余空白
+ * 7. 末页空白 → 末页高度=剩余内容高度
  */
 async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
   const { page, contentHeight, viewport } = await createRenderedPage(htmlContent, options);
   const scale = 2; // deviceScaleFactor，2x高清
 
   try {
-    // 判断是否需要分页
-    const needsPaging = contentHeight > MAX_SINGLE_PAGE_HEIGHT_PX;
-
-    if (needsPaging) {
-      console.log(`📄 内容高度 ${contentHeight}px 超过单页上限 ${MAX_SINGLE_PAGE_HEIGHT_PX}px，将分页截图`);
-      return await _screenshotPaged(page, contentHeight, viewport, scale);
-    } else {
-      return await _screenshotSinglePage(page, contentHeight, viewport, scale);
-    }
+    return await _screenshotA4Paged(page, contentHeight, viewport, scale);
   } finally {
     await page.close();
   }
 }
 
+// A4 纸张参数 (CSS像素, 96 DPI)
+const A4_WIDTH_PX = 794;    // 595.28pt * 96/72
+const A4_HEIGHT_PX = 1123;  // 841.89pt * 96/72
+const A4_MARGIN_PX = 0;     // 无边距（HTML自带边距）
+const A4_CONTENT_W = A4_WIDTH_PX - A4_MARGIN_PX * 2;
+const A4_CONTENT_H = A4_HEIGHT_PX - A4_MARGIN_PX * 2;
+
 /**
- * 截图模式 - 单页版本
- * 整页截图 → 嵌入单页PDF
- * 
- * 关键：保持 viewport 高度为手机屏高度（不改为 contentHeight），
- * 避免使用 100vh / height:100% 的元素被拉伸变形。
- * fullPage: true 截图会自动滚动页面捕获全部内容。
- * PDF 尺寸从截图 PNG 的实际像素尺寸精确计算。
+ * 截图模式 - A4 智能分页版本
+ *
+ * 流程：
+ * 1. 以 HTML 设计宽度渲染截图（全页长图）
+ * 2. 计算缩放比例：让内容适配 A4 宽度
+ * 3. 智能检测分页点：找到不切断内容的安全断页位置
+ * 4. 分段截图 → JPEG 压缩 → 嵌入 A4 页面
  */
-async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
-  // ★ 关键修复：将 viewport 高度设为实际内容高度
-  // 由于 100vh 已被改为 auto，此时设置 viewport 高度为 contentHeight
-  // 不会导致 100vh 元素被撑大，反而确保全页截图正好截到内容底部
+async function _screenshotA4Paged(page, contentHeight, viewport, scale) {
+  const htmlWidth = viewport.width;
+
+  // ★ Step 1: 计算缩放比例
+  // PC端设计(>500px): 缩放到A4宽度，保持比例
+  // 手机端设计(≤500px): 居中放在A4页面上，1:1不缩放（或适当放大）
+  let renderScale, offsetX, contentRenderW, contentRenderH;
+
+  if (htmlWidth > 500) {
+    // PC端设计：缩放到A4内容宽度
+    renderScale = A4_CONTENT_W / htmlWidth;
+    contentRenderW = A4_CONTENT_W;
+    contentRenderH = Math.ceil(contentHeight * renderScale);
+    offsetX = A4_MARGIN_PX;
+  } else {
+    // 手机端设计：居中放置，适当放大让内容更易读
+    // 放大到A4宽度的60%左右，保持手机端视觉比例
+    renderScale = (A4_CONTENT_W * 0.55) / htmlWidth;
+    contentRenderW = Math.ceil(htmlWidth * renderScale);
+    contentRenderH = Math.ceil(contentHeight * renderScale);
+    offsetX = Math.floor((A4_WIDTH_PX - contentRenderW) / 2); // 居中
+  }
+
+  // ★ Step 2: 设置 viewport 为 A4 宽度渲染
+  // 先在 A4 宽度下重新渲染，应用缩放
   await page.setViewport({
-    width: viewport.width,
-    height: contentHeight,
+    width: A4_WIDTH_PX,
+    height: Math.max(A4_HEIGHT_PX, contentRenderH + 100),
     deviceScaleFactor: scale
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
-  // 全页截图：由于 viewport 高度 = contentHeight，fullPage 截图不会有额外空白
-  const screenshotBuffer = await page.screenshot({
-    type: 'png',
-    fullPage: true
+  // 注入缩放CSS：将原始内容缩放到目标大小
+  await page.evaluate((rs, ox) => {
+    // 给 body 添加缩放变换
+    const body = document.body;
+    body.style.transformOrigin = '0 0';
+    body.style.transform = `scale(${rs})`;
+    body.style.width = `${100 / rs}%`;
+    // 如果需要居中（手机端），添加左边距
+    if (ox > 0) {
+      body.style.marginLeft = `${ox / rs}px`;
+    }
+  }, renderScale, offsetX);
+  await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
+
+  // ★ Step 3: 重新测量缩放后的内容高度
+  const scaledContentHeight = await page.evaluate(() => {
+    let maxBottom = 0;
+    const allElements = document.querySelectorAll('body *');
+    allElements.forEach(el => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > maxBottom) maxBottom = rect.bottom;
+    });
+    return Math.ceil(maxBottom + 10);
   });
 
-  // 从 PNG 实际像素尺寸反算 CSS 像素尺寸
-  const imgCssWidth = viewport.width;
-  const imgCssHeight = contentHeight;
+  console.log(`📐 A4分页参数: HTML宽=${htmlWidth}px, 缩放=${renderScale.toFixed(3)}, 渲染内容高=${scaledContentHeight}px, A4内容高=${A4_CONTENT_H}px`);
 
-  // CSS像素 → PDF pt (96 DPI → 72 DPI: 1px = 0.75pt)
-  const pdfW = imgCssWidth * 0.75;
-  const pdfH = imgCssHeight * 0.75;
+  // ★ Step 4: 智能分页 - 检测安全的断页位置
+  const pageBreaks = await _findSmartPageBreaks(page, A4_CONTENT_H, scaledContentHeight, scale);
 
-  const pdfDoc = await PDFDocument.create();
-  const img = await pdfDoc.embedPng(screenshotBuffer);
-  const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
-  pdfPage.drawImage(img, {
-    x: 0, y: 0,
-    width: pdfW,
-    height: pdfH
-  });
+  const totalPages = pageBreaks.length;
+  console.log(`📄 A4智能分页: 共${totalPages}页, 断页点=[${pageBreaks.map(b => b.y + 'px(' + b.reason + ')').join(', ')}]`);
 
-  const pdfBuffer = await pdfDoc.save();
-  const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
-
-  console.log(`✅ [截图模式-单页] PDF 生成成功: 1 页, ${sizeKB} KB, 尺寸: ${pdfW.toFixed(0)}x${pdfH.toFixed(0)}pt (CSS: ${imgCssWidth}x${imgCssHeight}px, scale: ${scale}x)`);
-
-  return {
-    buffer: Buffer.from(pdfBuffer),
-    pageCount: 1,
-    pageSize: { width: pdfW, height: pdfH },
-    sizeKB,
-    mode: 'screenshot'
-  };
-}
-
-/**
- * 截图模式 - 分页版本
- * 将超长内容分段截图 → 每段嵌入PDF的一页
- * 
- * 关键：保持 viewport 高度为手机屏高度，通过 scroll + clip 分段截取，
- * 避免改变 viewport 高度导致 100vh / height:100% 元素变形。
- */
-async function _screenshotPaged(page, contentHeight, viewport, scale) {
-  // 每段截图高度：基于内容实际宽度按比例计算（类似A4比例），但不超过 Chromium 截图安全上限
-  const SEGMENT_HEIGHT = Math.min(Math.round(viewport.width * 1.414 * 3), MAX_SINGLE_PAGE_HEIGHT_PX);
-  const totalPages = Math.ceil(contentHeight / SEGMENT_HEIGHT);
-
-  console.log(`📄 分页截图: 总高度 ${contentHeight}px, 每段 ${SEGMENT_HEIGHT}px, 共 ${totalPages} 页`);
-
-  // ★ 设置 viewport 高度为当前分段高度，避免空白
-  await page.setViewport({
-    width: viewport.width,
-    height: SEGMENT_HEIGHT,
-    deviceScaleFactor: scale
-  });
-  await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
-
+  // ★ Step 5: 分段截图 → JPEG → 嵌入PDF
   const pdfDoc = await PDFDocument.create();
 
   for (let i = 0; i < totalPages; i++) {
-    const clipY = i * SEGMENT_HEIGHT;
-    const clipHeight = Math.min(SEGMENT_HEIGHT, contentHeight - clipY);
+    const clipY = pageBreaks[i].y;
+    const nextY = i < totalPages - 1 ? pageBreaks[i + 1].y : scaledContentHeight;
+    const clipHeight = Math.min(nextY - clipY, A4_CONTENT_H);
 
     console.log(`  📸 截取第 ${i + 1}/${totalPages} 页: y=${clipY}, height=${clipHeight}`);
 
-    // ★ 滚动到目标位置（某些固定定位元素需要看到正确状态）
-    await page.evaluate((y) => {
-      window.scrollTo(0, y);
-    }, clipY);
-    await new Promise(r => setTimeout(r, 200)); // 等待滚动动画完成
+    // 滚动到目标位置
+    await page.evaluate((y) => window.scrollTo(0, y), clipY);
+    await new Promise(r => setTimeout(r, 200));
 
-    // 分段截图（clip 不受 viewport 高度限制，可截取视口外内容）
+    // 截图
     const screenshotBuffer = await page.screenshot({
-      type: 'png',
+      type: 'jpeg',
+      quality: 92,
       clip: {
         x: 0,
         y: clipY,
-        width: viewport.width,
+        width: A4_WIDTH_PX,
         height: clipHeight
       }
     });
 
-    // 嵌入PDF页面：CSS像素 → pt
-    const pdfW = viewport.width * 0.75;
-    const pdfH = clipHeight * 0.75;
+    // 嵌入A4页面
+    // A4尺寸: 595.28 × 841.89 pt
+    const a4W = 595.28;
+    const a4H = 841.89;
+    const img = await pdfDoc.embedJpg(screenshotBuffer);
 
-    const img = await pdfDoc.embedPng(screenshotBuffer);
-    const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
+    // 页面高度：如果是最后一页且内容不满，按实际内容高度设置
+    const isLastPage = (i === totalPages - 1);
+    const pageH = isLastPage ? (clipHeight / A4_CONTENT_H * a4H) : a4H;
+
+    const pdfPage = pdfDoc.addPage([a4W, pageH]);
     pdfPage.drawImage(img, {
       x: 0, y: 0,
-      width: pdfW,
-      height: pdfH
+      width: a4W,
+      height: pageH
     });
   }
 
@@ -736,15 +743,97 @@ async function _screenshotPaged(page, contentHeight, viewport, scale) {
   const sizeKB = (pdfBuffer.length / 1024).toFixed(1);
   const pageCount = pdfDoc.getPageCount();
 
-  console.log(`✅ [截图模式-分页] PDF 生成成功: ${pageCount} 页, ${sizeKB} KB`);
+  console.log(`✅ [截图模式-A4智能分页] PDF 生成成功: ${pageCount} 页, ${sizeKB} KB, A4尺寸`);
 
   return {
     buffer: Buffer.from(pdfBuffer),
     pageCount,
-    pageSize: { width: viewport.width * 0.75, height: contentHeight * 0.75 },
+    pageSize: { width: 595.28, height: 841.89 },
     sizeKB,
     mode: 'screenshot'
   };
+}
+
+/**
+ * 智能分页：找到不切断内容的安全断页位置
+ *
+ * 策略：
+ * 1. 从每页底部向上搜索，找到最近的块级元素边界作为断页点
+ * 2. 块级元素包括：卡片(.card)、标题(h1-h6)、表格(table)、分割线(hr)、section
+ * 3. 如果找不到合适的块级边界，则在页面底部留出少量安全边距后截断
+ * 4. 避免在文字段落中间断开
+ */
+async function _findSmartPageBreaks(page, pageHeight, totalHeight, scale) {
+  // 在页面中执行分页点检测
+  const breaks = await page.evaluate((pH, tH) => {
+    const result = [{ y: 0, reason: '页首' }];
+
+    let currentY = pH;
+    while (currentY < tH) {
+      // 在当前分页线附近搜索最佳断点
+      // 搜索范围：从分页线向上200px到分页线下方50px
+      const searchTop = Math.max(currentY - 300, result[result.length - 1].y + 200);
+      const searchBottom = currentY + 50;
+
+      // 收集搜索范围内所有块级元素的边界位置
+      const blockElements = document.querySelectorAll(
+        'h1, h2, h3, h4, h5, h6, ' +
+        '.card, .section, .container, .page, .slide, ' +
+        'table, thead, hr, ' +
+        '.divider, .separator, .spacer, ' +
+        '[class*="card"], [class*="section"], [class*="block"], ' +
+        'section, article, aside, main, header, footer, nav'
+      );
+
+      let bestBreak = null;
+      let bestScore = -1;
+
+      blockElements.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const top = Math.round(rect.top);
+        const bottom = Math.round(rect.bottom);
+
+        // 元素顶部作为断点（新元素从新一页开始）
+        if (top >= searchTop && top <= searchBottom) {
+          // 评分：越接近理想分页线越好，且大元素优先
+          const distance = Math.abs(top - currentY);
+          const sizeBonus = rect.height > 50 ? 10 : 0;
+          const score = 1000 - distance + sizeBonus;
+          if (score > bestScore) {
+            bestScore = score;
+            bestBreak = { y: top, reason: el.tagName + (el.className ? '.' + el.className.split(' ')[0] : '') + '-top' };
+          }
+        }
+
+        // 元素底部作为断点（元素完整显示在当前页）
+        if (bottom >= searchTop && bottom <= searchBottom) {
+          const distance = Math.abs(bottom - currentY);
+          const sizeBonus = rect.height > 50 ? 10 : 0;
+          const score = 1000 - distance + sizeBonus + 5; // 底部断点略优先
+          if (score > bestScore) {
+            bestScore = score;
+            bestBreak = { y: bottom, reason: el.tagName + (el.className ? '.' + el.className.split(' ')[0] : '') + '-bottom' };
+          }
+        }
+      });
+
+      if (bestBreak && bestBreak.y > result[result.length - 1].y) {
+        result.push(bestBreak);
+        currentY = bestBreak.y + pH;
+      } else {
+        // 没找到合适的块级边界，直接在页面高度处截断
+        const fallback = { y: currentY, reason: 'fallback' };
+        if (fallback.y > result[result.length - 1].y) {
+          result.push(fallback);
+        }
+        currentY += pH;
+      }
+    }
+
+    return result;
+  }, pageHeight, totalHeight);
+
+  return breaks;
 }
 
 /**
