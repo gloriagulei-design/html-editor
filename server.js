@@ -17,6 +17,165 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { PDFDocument } from 'pdf-lib';
 
+// ====== HTML 预处理模块 ======
+// 处理各种来源的 HTML 文件格式差异，确保 Puppeteer 渲染时视觉一致
+
+/**
+ * 全面预处理 HTML 内容，使其在 Puppeteer 中正确渲染
+ * 处理场景：
+ * 1. 纯 HTML 片段（无 html/head/body 标签）
+ * 2. 缺少 charset 声明（中文乱码）
+ * 3. 缺少 viewport meta（移动端布局错乱）
+ * 4. XML 声明或 BOM 头干扰
+ * 5. @media print 样式改变渲染效果
+ * 6. 非标准结构（meta 在 body 中等）
+ * 7. 框架构建产物（React/Vue等）
+ * 8. 外部资源（字体/图标）加载失败
+ * 9. 编码异常字符
+ */
+function normalizeHtmlForPdf(rawHtml) {
+  let html = rawHtml;
+
+  // ── Step 1: 清除 BOM 和异常前缀 ──
+  html = html.replace(/^\uFEFF/, '');               // UTF-8 BOM
+  html = html.replace(/^\u00BB\u00BF/, '');          // UTF-8 BOM (另一种)
+  html = html.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, ''); // 控制字符
+
+  // ── Step 2: 移除 XML 声明（Puppeteer 不需要） ──
+  html = html.replace(/<\?xml[^?]*\?>/gi, '');
+
+  // ── Step 3: 检测是否为完整 HTML 文档 ──
+  const hasDoctype = /^\s*<!DOCTYPE/i.test(html);
+  const hasHtmlTag = /<html[\s>]/i.test(html);
+  const hasHeadTag = /<head[\s>]/i.test(html);
+  const hasBodyTag = /<body[\s>]/i.test(html);
+
+  // ── Step 4: 如果不是完整文档，包装为标准结构 ──
+  if (!hasHtmlTag) {
+    // 纯片段或部分 HTML
+    let headContent = '';
+    let bodyContent = html;
+
+    // 尝试提取已有的 <head> 内容（可能出现在片段中）
+    const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+    if (headMatch) {
+      headContent = headMatch[1];
+      bodyContent = html.replace(/<head[^>]*>[\s\S]*?<\/head>/i, '');
+    }
+
+    // 尝试提取已有的 <body> 内容
+    const bodyMatch = bodyContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) {
+      bodyContent = bodyMatch[1];
+    }
+
+    html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${headContent}
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+  } else if (!hasHeadTag) {
+    // 有 <html> 但没有 <head>
+    html = html.replace(/<html([^>]*)>/i, (match, attrs) => {
+      return `${match}<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>`;
+    });
+  }
+
+  // ── Step 5: 确保 charset 声明存在 ──
+  const hasCharset = /<meta[^>]+charset/i.test(html);
+  if (!hasCharset && html.includes('<head>')) {
+    html = html.replace(/<head>/i, '<head>\n<meta charset="UTF-8">');
+  } else if (!hasCharset && html.includes('<head ')) {
+    html = html.replace(/<head([^>]*)>/i, '<head$1>\n<meta charset="UTF-8">');
+  }
+
+  // ── Step 6: 确保 viewport meta 存在 ──
+  const hasViewport = /<meta[^>]+viewport/i.test(html);
+  if (!hasViewport) {
+    const viewportMeta = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+    if (html.includes('<head>')) {
+      html = html.replace(/<head>/i, `<head>\n${viewportMeta}`);
+    } else if (html.includes('<head ')) {
+      html = html.replace(/<head([^>]*)>/i, `<head$1>\n${viewportMeta}`);
+    }
+  }
+
+  // ── Step 7: 修复非标准结构 — 把 body 中的 <meta>/<link>/<style> 移到 <head> ──
+  // 找出 <body> 内的 <meta> 和 <link rel="stylesheet"> 标签
+  const bodyHeadElements = [];
+  const bodyTagRegex = /<body[^>]*>([\s\S]*?)<\/body>/i;
+  const bodyMatch = html.match(bodyTagRegex);
+  if (bodyMatch) {
+    let bodyContent = bodyMatch[1];
+    // 提取 <meta> 标签（排除 charset 和 viewport，避免重复）
+    bodyContent = bodyContent.replace(/<meta(?![^>]*charset)(?![^>]*viewport)[^>]*>/gi, (match) => {
+      bodyHeadElements.push(match);
+      return '';
+    });
+    // 提取 <link rel="stylesheet"> 标签
+    bodyContent = bodyContent.replace(/<link[^>]+rel\s*=\s*["']stylesheet["'][^>]*>/gi, (match) => {
+      bodyHeadElements.push(match);
+      return '';
+    });
+    if (bodyHeadElements.length > 0) {
+      html = html.replace(bodyTagRegex, `<body>${bodyContent}</body>`);
+      // 插入到 </head> 前
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', bodyHeadElements.join('\n') + '\n</head>');
+      }
+    }
+  }
+
+  // ── Step 8: 禁用/覆盖 @media print 样式（防止打印时样式变化） ──
+  // 将所有 @media print 块替换为空（我们在后面会注入自己的打印覆盖CSS）
+  html = html.replace(/@media\s+print\s*\{[\s\S]*?\}/gi, '');
+
+  // ── Step 9: 确保基础字体栈存在（防止系统无字体时渲染异常） ──
+  const hasFontFamily = /font-family/i.test(html);
+  if (!hasFontFamily && html.includes('<head>')) {
+    const baseFontCss = `<style>
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+</style>`;
+    html = html.replace(/<head>/i, `<head>\n${baseFontCss}`);
+  }
+
+  // ── Step 10: 处理常见的框架构建产物 ──
+  // React: 确保根节点存在
+  if (html.includes('react') && html.includes('root') && !html.includes('id="root"')) {
+    // React 应用通常需要 <div id="root">
+    if (html.includes('<body>')) {
+      html = html.replace('<body>', '<body>\n<div id="root"></div>');
+    }
+  }
+  // Vue: 确保 #app 节点
+  if (html.includes('vue') && !html.includes('id="app"')) {
+    if (html.includes('<body>')) {
+      html = html.replace('<body>', '<body>\n<div id="app"></div>');
+    }
+  }
+
+  // ── Step 11: 清理空白和格式化 ──
+  // 移除 HTML 注释（保留条件注释）
+  html = html.replace(/<!--(?!\[if)[\s\S]*?-->/g, '');
+
+  // ── Step 12: 确保有 DOCTYPE 声明 ──
+  if (!html.trim().toLowerCase().startsWith('<!doctype')) {
+    html = '<!DOCTYPE html>\n' + html;
+  }
+
+  console.log(`🔧 HTML 预处理完成: 原始 ${rawHtml.length} 字符 → 处理后 ${html.length} 字符, Doctype=${hasDoctype || html.includes('<!DOCTYPE')}, Head=${html.includes('<head')}, Charset=${html.includes('charset')}, Viewport=${html.includes('viewport')}`);
+
+  return html;
+}
+
 // ====== 配置 ======
 const PORT = process.env.PORT || 3100;
 const HOST = '0.0.0.0';
@@ -114,6 +273,9 @@ const PDF_PRINT_OVERRIDE_CSS = `
  * 公共：创建 Puppeteer 页面，渲染 HTML，返回 page 和测量信息
  */
 async function createRenderedPage(htmlContent, options = {}) {
+  // ★ 预处理 HTML：规范化各种格式差异
+  htmlContent = normalizeHtmlForPdf(htmlContent);
+
   const pdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
     ? parseInt(options.pdfWidth, 10)
     : VIEWPORT.width;

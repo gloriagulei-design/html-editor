@@ -329,8 +329,109 @@
     r.readAsText(file);
   }
 
+  /* ── HTML 预处理：规范化各种来源的 HTML 格式 ── */
+  function normalizeHtml(html) {
+    if (!html || typeof html !== 'string') return html;
+    let h = html;
+
+    // 1. 清除 BOM 和异常前缀
+    h = h.replace(/^\uFEFF/, '');
+    h = h.replace(/^\u00BB\u00BF/, '');
+    h = h.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, '');
+
+    // 2. 移除 XML 声明
+    h = h.replace(/<\?xml[^?]*\?>/gi, '');
+
+    // 3. 检测是否为完整 HTML 文档
+    const hasHtmlTag = /<html[\s>]/i.test(h);
+    const hasHeadTag = /<head[\s>]/i.test(h);
+    const hasBodyTag = /<body[\s>]/i.test(h);
+
+    // 4. 如果不是完整文档，包装为标准结构
+    if (!hasHtmlTag) {
+      let headContent = '';
+      let bodyContent = h;
+
+      const headMatch = h.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+      if (headMatch) {
+        headContent = headMatch[1];
+        bodyContent = h.replace(/<head[^>]*>[\s\S]*?<\/head>/i, '');
+      }
+
+      const bodyMatch = bodyContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      if (bodyMatch) {
+        bodyContent = bodyMatch[1];
+      }
+
+      h = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${headContent}
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+    } else if (!hasHeadTag) {
+      h = h.replace(/<html([^>]*)>/i, (match, attrs) => {
+        return `${match}<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>`;
+      });
+    }
+
+    // 5. 确保 charset 声明
+    if (!/<meta[^>]+charset/i.test(h)) {
+      if (h.includes('<head>')) {
+        h = h.replace(/<head>/i, '<head>\n<meta charset="UTF-8">');
+      } else if (h.includes('<head ')) {
+        h = h.replace(/<head([^>]*)>/i, '<head$1>\n<meta charset="UTF-8">');
+      }
+    }
+
+    // 6. 确保 viewport meta
+    if (!/<meta[^>]+viewport/i.test(h)) {
+      const vp = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+      if (h.includes('<head>')) {
+        h = h.replace(/<head>/i, `<head>\n${vp}`);
+      } else if (h.includes('<head ')) {
+        h = h.replace(/<head([^>]*)>/i, `<head$1>\n${vp}`);
+      }
+    }
+
+    // 7. 修复非标准结构：将 body 中的 meta/link[stylesheet] 移到 head
+    const bodyHeadEls = [];
+    const bodyTagReg = /<body[^>]*>([\s\S]*?)<\/body>/i;
+    const bMatch = h.match(bodyTagReg);
+    if (bMatch) {
+      let bContent = bMatch[1];
+      bContent = bContent.replace(/<meta(?![^>]*charset)(?![^>]*viewport)[^>]*>/gi, (m) => {
+        bodyHeadEls.push(m); return '';
+      });
+      bContent = bContent.replace(/<link[^>]+rel\s*=\s*["']stylesheet["'][^>]*>/gi, (m) => {
+        bodyHeadEls.push(m); return '';
+      });
+      if (bodyHeadEls.length > 0) {
+        h = h.replace(bodyTagReg, `<body>${bContent}</body>`);
+        if (h.includes('</head>')) {
+          h = h.replace('</head>', bodyHeadEls.join('\n') + '\n</head>');
+        }
+      }
+    }
+
+    // 8. 确保有 DOCTYPE 声明
+    if (!h.trim().toLowerCase().startsWith('<!doctype')) {
+      h = '<!DOCTYPE html>\n' + h;
+    }
+
+    // 9. 清理 HTML 注释（保留条件注释）
+    h = h.replace(/<!--(?!\[if)[\s\S]*?-->/g, '');
+
+    return h;
+  }
+
   function loadHtml(html, name, size) {
-    currentHtml = html;
+    currentHtml = normalizeHtml(html); // ★ 上传时即预处理规范化
     renderPreview(); buildElementTree(); updateCodePanel();
     els.fileName.textContent = name;
     els.fileSize.textContent = formatBytes(size || new Blob([html]).size);
@@ -338,7 +439,7 @@
     els.fileInfo.classList.add('show');
     editHistory = []; undoStack = []; redoStack = []; voiceLog = [];
     updateHistoryUI(); updateUndoUI(); updateVoiceLogUI();
-    showToast(`已加载「${name}」`, 'success');
+    showToast(`已加载「${name}」(HTML已规范化)`, 'success');
   }
 
   /* ── 预览渲染 ── */
@@ -1027,22 +1128,8 @@
     btn.innerHTML = '<span class="spinner"></span> 生成中…';
 
     try {
-      // 构建完整的 HTML 文档（确保包含所有样式）
-      let fullHtml = currentHtml;
-      // 如果当前内容不是完整HTML文档，包装一下
-      if (!currentHtml.trim().toLowerCase().startsWith('<!doctype') && !currentHtml.trim().toLowerCase().startsWith('<html')) {
-        fullHtml = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${currentFileName}</title>
-</head>
-<body>
-${currentHtml}
-</body>
-</html>`;
-      }
+      // ★ 预处理：再次规范化 HTML（确保上传后的编辑没有破坏结构）
+      let fullHtml = normalizeHtml(currentHtml);
 
       // 注入PDF渲染专用CSS：确保背景色保留、禁止分页、禁用打印媒体查询
       const pdfCssOverride = `
@@ -1146,7 +1233,7 @@ ${currentHtml}
       const pages = response.headers.get('X-PDF-Pages') || '?';
       const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
       const mode = response.headers.get('X-PDF-Mode') === 'screenshot' ? '截图' : '打印';
-      showToast(`✅ PDF 已导出: ${pdfName} (${mode}模式, ${pages}页, ${sizeKB}KB)`, 'success');
+      showToast(`✅ PDF 已导出: ${pdfName} (${mode}模式, ${pages}页, ${sizeKB}KB) · HTML已预处理`, 'success');
     } catch (err) {
       console.error('PDF 导出失败:', err);
       // 降级方案：使用浏览器打印功能保存为 PDF

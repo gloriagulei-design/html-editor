@@ -1,5 +1,6 @@
 # HTML可视化编辑器 - 生产环境
 # 基于 Node.js + Chromium 提供 HTML 编辑和 PDF 导出服务
+# 支持 HTML 预处理：自动规范化各种来源的 HTML 格式
 
 # ====== 依赖安装阶段 ======
 FROM node:20-alpine AS deps
@@ -9,7 +10,7 @@ WORKDIR /app
 # 复制包文件
 COPY package.json package-lock.json* ./
 
-# 安装生产依赖
+# 安装生产依赖（含 puppeteer-core, pdf-lib, express 等）
 RUN npm ci --only=production 2>/dev/null || npm install --only=production
 
 # ====== 生产运行阶段 ======
@@ -48,7 +49,7 @@ COPY --chown=appuser:nodejs app.js ./
 COPY --chown=appuser:nodejs styles.css ./
 COPY --chown=appuser:nodejs install.sh ./
 
-# 创建临时目录
+# 创建临时目录（Puppeteer 渲染 PDF 时使用）
 RUN mkdir -p /app/.tmp && chown appuser:nodejs /app/.tmp
 
 # 切换到非 root 用户
