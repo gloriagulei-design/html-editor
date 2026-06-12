@@ -1175,9 +1175,9 @@ ${bodyContent}
       fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
       fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
 
-      // 固定使用截图模式 + 手机屏宽度（390px），确保PDF在手机上完美显示
+      // 使用截图模式，宽度自动检测（服务端根据HTML内容自动判断手机/PC设计宽度）
       const pdfMode = 'screenshot';
-      const pdfWidth = '390';
+      const pdfWidth = 'auto';
 
       // 带超时的 fetch 请求
       const controller = new AbortController();
@@ -1234,7 +1234,7 @@ ${bodyContent}
       const pages = response.headers.get('X-PDF-Pages') || '?';
       const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
       const mode = response.headers.get('X-PDF-Mode') === 'screenshot' ? '截图' : '打印';
-      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB) · 适配手机屏`, 'success');
+      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB)`, 'success');
     } catch (err) {
       console.error('PDF 导出失败:', err);
       // 降级方案：使用浏览器打印功能保存为 PDF

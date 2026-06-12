@@ -196,13 +196,15 @@ const CHROME_ARGS = [
   '--font-cache-shared-handle'
 ];
 
-const VIEWPORT = { width: 390, height: 844 };
+// ★ 不再硬编码手机屏尺寸，改为自动检测 HTML 的设计宽度
+const DEFAULT_VIEWPORT = { width: 1280, height: 900 }; // 默认用PC宽度渲染，后续自动检测实际宽度
 const TIMEOUTS = {
   pageLoad: 30000,
   canvasWait: 15000,
   postRender: 2000,
   postExpand: 500,
-  postStyle: 300
+  postStyle: 300,
+  postViewport: 500  // viewport 切换后等待重排
 };
 
 // 截图模式：单页最大高度（超过则自动分页）
@@ -285,10 +287,11 @@ async function createRenderedPage(htmlContent, options = {}) {
   // ★ 预处理 HTML：规范化各种格式差异
   htmlContent = normalizeHtmlForPdf(htmlContent);
 
-  const pdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
+  // ★ 自动检测 HTML 设计宽度：先以宽 viewport 渲染，测量内容实际宽度
+  // 如果前端传了 pdfWidth 且不是 'auto'，则使用指定宽度；否则自动检测
+  const userPdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
     ? parseInt(options.pdfWidth, 10)
-    : VIEWPORT.width;
-  const viewport = { width: pdfWidth, height: VIEWPORT.height };
+    : null;
 
   let browser;
   try {
@@ -307,9 +310,10 @@ async function createRenderedPage(htmlContent, options = {}) {
     throw new Error('创建渲染页面失败，请重试: ' + pageErr.message);
   }
 
-  await page.setViewport(viewport);
+  // Step0: 先以默认PC宽度渲染，用于检测实际内容宽度
+  await page.setViewport(DEFAULT_VIEWPORT);
 
-  // Step0: 渲染页面（先写临时文件再用 file:// 加载，确保相对资源能正确加载）
+  // 写临时文件并用 file:// 加载
   const tmpHtmlPath = join(TMP_DIR, `pdf-${randomUUID()}.html`);
   writeFileSync(tmpHtmlPath, htmlContent, 'utf-8');
 
@@ -348,7 +352,7 @@ async function createRenderedPage(htmlContent, options = {}) {
   }
   await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
 
-  // Step1: 注入背景色和打印颜色保留CSS（用CSS注入代替直接修改DOM style，避免颜色格式问题）
+  // Step1: 注入背景色和打印颜色保留CSS
   await page.evaluate(() => {
     const style = document.createElement('style');
     style.id = 'pdf-bg-override';
@@ -360,10 +364,8 @@ async function createRenderedPage(htmlContent, options = {}) {
       }
     `;
     document.head.appendChild(style);
-    // 同时设置 DOM style 确保截图时背景色生效
     const htmlBg = getComputedStyle(document.documentElement).backgroundColor;
     const bodyBg = getComputedStyle(document.body).backgroundColor;
-    // 如果 html 或 body 没有背景色，强制设为白色（避免截图时背景透明）
     if (!htmlBg || htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent') {
       document.documentElement.style.backgroundColor = '#ffffff';
     }
@@ -372,13 +374,89 @@ async function createRenderedPage(htmlContent, options = {}) {
     }
   });
 
-  // ★ 关键修复：消除 100vh 等导致PDF空白的声明
-  // 很多HTML模板使用 height:100vh / min-height:100vh 来撑满屏幕，
-  // 但在PDF渲染时这些声明会导致大量空白，因为viewport高度(844px)远大于实际内容高度
-  // 策略：将所有使用 vh/vw 的高度声明替换为 auto，保留 px/rem/% 等值
-  // 注意：% 单位不处理，因为 html/body 改为 auto 后，子元素的 100% 自然也收缩了
+  // Step2: ★ 自动检测 HTML 的设计宽度
+  let detectedWidth;
+  if (userPdfWidth) {
+    // 用户指定了宽度，直接使用
+    detectedWidth = userPdfWidth;
+  } else {
+    // 自动检测：智能识别 HTML 的实际设计宽度
+    detectedWidth = await page.evaluate(() => {
+      // 方法1: 遍历所有可见元素，取最大 right 边界
+      let maxRight = 0;
+      const allElements = document.querySelectorAll('body *');
+      allElements.forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
+        if (rect.right > maxRight) {
+          maxRight = rect.right;
+        }
+      });
+
+      // 方法2: 检查 body 和主要容器的 max-width（识别居中布局的移动端设计）
+      // 很多移动端模板使用 max-width: 390px + margin: 0 auto 居中
+      let contentMaxWidth = 0;
+      const checkElements = [document.body, ...document.querySelectorAll('body > *')];
+      checkElements.forEach(el => {
+        if (!el) return;
+        const cs = getComputedStyle(el);
+        // 检查 max-width
+        if (cs.maxWidth && cs.maxWidth !== 'none') {
+          const mw = parseFloat(cs.maxWidth);
+          if (mw > 0 && mw < 800) { // 小于800px的max-width很可能是移动端设计
+            contentMaxWidth = Math.max(contentMaxWidth, mw);
+          }
+        }
+        // 检查 width 的固定值
+        if (cs.width && cs.width !== 'auto') {
+          const w = parseFloat(cs.width);
+          if (w > 0 && w < 800) {
+            contentMaxWidth = Math.max(contentMaxWidth, w);
+          }
+        }
+      });
+
+      // 方法3: 检查 viewport meta 的 width 声明
+      let viewportWidth = 0;
+      const viewportMeta = document.querySelector('meta[name="viewport"]');
+      if (viewportMeta) {
+        const content = viewportMeta.getAttribute('content') || '';
+        const widthMatch = content.match(/width\s*=\s*(\d+)/);
+        if (widthMatch) {
+          viewportWidth = parseInt(widthMatch[1], 10);
+        }
+      }
+
+      // 综合判断：如果有明显的移动端 max-width 声明，使用它
+      if (contentMaxWidth > 300 && contentMaxWidth <= 500) {
+        return Math.ceil(contentMaxWidth);
+      }
+      // 如果有 viewport width 声明且是移动端宽度
+      if (viewportWidth > 300 && viewportWidth <= 500) {
+        return Math.ceil(viewportWidth);
+      }
+      // 否则使用元素实际渲染宽度
+      const bodyWidth = document.body ? document.body.scrollWidth : 0;
+      const htmlWidth = document.documentElement ? document.documentElement.scrollWidth : 0;
+      const docWidth = Math.max(bodyWidth, htmlWidth);
+      return Math.max(Math.ceil(maxRight), docWidth, 320);
+    });
+    console.log(`📐 自动检测到内容宽度: ${detectedWidth}px`);
+  }
+
+  // ★ 根据检测到的宽度，判断是否为手机端设计
+  // 手机端设计：宽度 <= 500px（如375/390/414等），用检测到的宽度
+  // PC端设计：宽度 > 500px，用检测到的宽度
+  const pdfWidth = detectedWidth;
+
+  // Step3: 设置正确的 viewport 宽度，高度保持足够大（避免100vh问题后面处理）
+  const viewport = { width: pdfWidth, height: DEFAULT_VIEWPORT.height };
+  await page.setViewport(viewport);
+  await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
+
+  // Step4: 消除 100vh 等导致PDF空白的声明
   await page.evaluate(() => {
-    // 1. 处理内联样式（style 属性）中的 vh/vw
     document.querySelectorAll('[style]').forEach(el => {
       const style = el.style;
       ['height', 'minHeight', 'maxHeight'].forEach(prop => {
@@ -389,7 +467,6 @@ async function createRenderedPage(htmlContent, options = {}) {
       });
     });
 
-    // 2. 处理 <style> 标签和 <link> 引用的 CSS 中的 vh/vw 规则
     try {
       for (const sheet of document.styleSheets) {
         try {
@@ -402,7 +479,6 @@ async function createRenderedPage(htmlContent, options = {}) {
                 }
               });
             }
-            // 处理 @media 规则内的规则
             if (rule.cssRules) {
               for (const innerRule of rule.cssRules) {
                 if (innerRule.style) {
@@ -416,15 +492,10 @@ async function createRenderedPage(htmlContent, options = {}) {
               }
             }
           }
-        } catch (e) {
-          // 跨域样式表无法访问，跳过
-        }
+        } catch (e) {}
       }
-    } catch (e) {
-      // 安全异常，跳过
-    }
+    } catch (e) {}
 
-    // 3. 强制 html/body 高度为 auto
     document.documentElement.style.setProperty('height', 'auto', 'important');
     document.documentElement.style.setProperty('min-height', 'auto', 'important');
     document.body.style.setProperty('height', 'auto', 'important');
@@ -434,7 +505,7 @@ async function createRenderedPage(htmlContent, options = {}) {
 
   await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-  // 展开隐藏内容（如折叠面板等）
+  // 展开隐藏内容
   await page.evaluate(() => {
     document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
     document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
@@ -443,41 +514,31 @@ async function createRenderedPage(htmlContent, options = {}) {
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step2: 精确测量内容高度
-  // ★ 不使用 scrollHeight（会被 100vh/100%/flex:1 等撑大导致空白）
-  // 改用遍历所有可见元素的 getBoundingClientRect().bottom，取最大值
+  // Step5: 精确测量内容高度
   let contentHeight = await page.evaluate(() => {
-    // 方法1: 遍历所有元素，找实际内容底部边界
     let maxBottom = 0;
     const allElements = document.querySelectorAll('body *');
     allElements.forEach(el => {
-      // 跳过不可见元素
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-      
       const rect = el.getBoundingClientRect();
       if (rect.bottom > maxBottom) {
         maxBottom = rect.bottom;
       }
     });
-    
-    // 方法2: 取 scrollHeight 作为参考上限
+
     const scrollH = Math.max(
       document.documentElement.scrollHeight || 0,
       document.body ? document.body.scrollHeight : 0
     );
-    
-    // ★ 取两者中较小的值，确保不会因为 100vh 撑出空白
-    // 但如果 scrollHeight 比 maxBottom 小很多，说明 maxBottom 可能有问题（如fixed元素），用 scrollHeight
+
     const result = Math.min(maxBottom, scrollH);
-    
-    // 加上底部 padding（20px）避免内容被截断
     return Math.ceil(result + 20);
   });
-  
-  // 如果内容高度小于 viewport 高度，说明内容很短，不需要额外空白
-  // 但至少保留 viewport 高度以避免布局问题
-  contentHeight = Math.max(contentHeight, 100); // 至少100px
+
+  contentHeight = Math.max(contentHeight, 100);
+
+  console.log(`📐 PDF渲染参数: 宽度=${pdfWidth}px, 内容高度=${contentHeight}px`);
 
   return { page, contentHeight, viewport };
 }
@@ -564,28 +625,25 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
  * PDF 尺寸从截图 PNG 的实际像素尺寸精确计算。
  */
 async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
-  // ★ 保持 viewport 为手机屏尺寸，仅设置 deviceScaleFactor 为高清
-  // 关键：由于前面已经注入CSS将 100vh/min-height:100vh 改为 auto，
-  // 此时的 contentHeight 已经是真实内容高度，不再包含空白
+  // ★ 关键修复：将 viewport 高度设为实际内容高度
+  // 由于 100vh 已被改为 auto，此时设置 viewport 高度为 contentHeight
+  // 不会导致 100vh 元素被撑大，反而确保全页截图正好截到内容底部
   await page.setViewport({
     width: viewport.width,
-    height: viewport.height,  // 保持手机屏高度，避免 100vh 元素被拉伸
+    height: contentHeight,
     deviceScaleFactor: scale
   });
-  await new Promise(r => setTimeout(r, 500)); // 等待重排完成
+  await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
-  // ★ 全页截图：fullPage=true 会自动滚动截取全部内容
-  // 由于 100vh 已被改为 auto，scrollHeight 等于真实内容高度，不会有多余空白
+  // 全页截图：由于 viewport 高度 = contentHeight，fullPage 截图不会有额外空白
   const screenshotBuffer = await page.screenshot({
     type: 'png',
     fullPage: true
   });
 
-  // ★ 从 PNG 实际像素尺寸反算 CSS 像素尺寸（除以 deviceScaleFactor）
-  // puppeteer screenshot 的 PNG 宽度 = viewport.width * scale
-  // puppeteer screenshot 的 PNG 高度 = contentHeight * scale
-  const imgCssWidth = viewport.width;   // CSS 像素宽
-  const imgCssHeight = contentHeight;   // CSS 像素高（截图实际捕获的内容高度）
+  // 从 PNG 实际像素尺寸反算 CSS 像素尺寸
+  const imgCssWidth = viewport.width;
+  const imgCssHeight = contentHeight;
 
   // CSS像素 → PDF pt (96 DPI → 72 DPI: 1px = 0.75pt)
   const pdfW = imgCssWidth * 0.75;
@@ -622,20 +680,19 @@ async function _screenshotSinglePage(page, contentHeight, viewport, scale) {
  * 避免改变 viewport 高度导致 100vh / height:100% 元素变形。
  */
 async function _screenshotPaged(page, contentHeight, viewport, scale) {
-  const phoneScreenH = viewport.height; // 手机屏高度（如 844px）
-  // 每段截图高度：以手机屏高度为单位，但不超过 Chromium 截图安全上限
-  const SEGMENT_HEIGHT = Math.min(phoneScreenH * 4, MAX_SINGLE_PAGE_HEIGHT_PX);
+  // 每段截图高度：基于内容实际宽度按比例计算（类似A4比例），但不超过 Chromium 截图安全上限
+  const SEGMENT_HEIGHT = Math.min(Math.round(viewport.width * 1.414 * 3), MAX_SINGLE_PAGE_HEIGHT_PX);
   const totalPages = Math.ceil(contentHeight / SEGMENT_HEIGHT);
 
   console.log(`📄 分页截图: 总高度 ${contentHeight}px, 每段 ${SEGMENT_HEIGHT}px, 共 ${totalPages} 页`);
 
-  // ★ 保持 viewport 为手机屏尺寸（不改变高度！）
+  // ★ 设置 viewport 高度为当前分段高度，避免空白
   await page.setViewport({
     width: viewport.width,
-    height: phoneScreenH,
+    height: SEGMENT_HEIGHT,
     deviceScaleFactor: scale
   });
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
   const pdfDoc = await PDFDocument.create();
 
