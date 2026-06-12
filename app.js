@@ -91,6 +91,21 @@
     btnModalOk      : $('#btn-modal-ok'),
 
     toastContainer  : $('#toast-container'),
+
+    // AI 命令助手面板
+    aiAssistantPanel   : $('#ai-assistant-panel'),
+    aiAssistantHeader  : $('#ai-assistant-header'),
+    aiAssistantToggle  : $('#ai-assistant-toggle'),
+    aiAssistantArrow   : $('#ai-assistant-arrow'),
+    aiAssistantClose   : $('#ai-assistant-close'),
+    aiAssistantBody    : $('#ai-assistant-body'),
+    aiAssistantMessages: $('#ai-assistant-messages'),
+    cmdTextInput       : $('#cmd-text-input'),
+    cmdSendBtn         : $('#cmd-send-btn'),
+    cmdVoiceBtn        : $('#cmd-voice-btn'),
+    cmdClearHistory    : $('#cmd-clear-history'),
+    voiceStatusBar     : $('#voice-status-bar'),
+    voiceStatusText    : $('#voice-status-text'),
   };
 
   /* ── 初始化 ── */
@@ -283,12 +298,8 @@
     /* 撤销/重做按钮 */
     const btnUndo = $('#btn-undo');
     const btnRedo = $('#btn-redo');
-    const btnUndoSidebar = $('#btn-undo-sidebar');
-    const btnRedoSidebar = $('#btn-redo-sidebar');
     if (btnUndo) btnUndo.addEventListener('click', undo);
     if (btnRedo) btnRedo.addEventListener('click', redo);
-    if (btnUndoSidebar) btnUndoSidebar.addEventListener('click', undo);
-    if (btnRedoSidebar) btnRedoSidebar.addEventListener('click', redo);
 
     /* 键盘快捷键 Ctrl+Z / Ctrl+Shift+Z */
     document.addEventListener('keydown', (e) => {
@@ -975,50 +986,8 @@ ${bodyContent}
   }
 
   function updateVoiceLogUI() {
-    const container = document.getElementById('voice-log-list');
-    if (!container) return;
-    const countEl = document.getElementById('voice-log-count');
-    if (countEl) countEl.textContent = voiceLog.length;
-
-    container.innerHTML = '';
-    if (voiceLog.length === 0) {
-      container.innerHTML = '<div class="voice-log-empty"><i class="fas fa-microphone-slash"></i><span>暂无语音命令记录</span></div>';
-      return;
-    }
-
-    voiceLog.forEach((entry, idx) => {
-      const iconMap = {
-        recognize: 'fa-ear-listen',
-        replace: 'fa-right-left',
-        move: 'fa-arrows-up-down-left-right',
-        color: 'fa-palette',
-        bgcolor: 'fa-fill-drip',
-        fontsize: 'fa-text-height',
-        bold: 'fa-bold',
-        select: 'fa-hand-pointer',
-        unknown: 'fa-question'
-      };
-      const icon = iconMap[entry.type] || 'fa-microphone';
-      const statusIcon = entry.success ? 'fa-circle-check' : 'fa-circle-xmark';
-      const statusClass = entry.success ? 'voice-log-success' : 'voice-log-fail';
-
-      const item = document.createElement('div');
-      item.className = 'voice-log-item';
-      item.innerHTML =
-        '<div class="voice-log-icon-wrap">' +
-          '<i class="fas ' + icon + '"></i>' +
-        '</div>' +
-        '<div class="voice-log-content">' +
-          '<div class="voice-log-cmd">' + escapeHtml(entry.command) + '</div>' +
-          '<div class="voice-log-meta">' +
-            '<span class="voice-log-time">' + entry.time + '</span>' +
-            '<span class="voice-log-status ' + statusClass + '">' +
-              '<i class="fas ' + statusIcon + '"></i> ' + escapeHtml(entry.message) +
-            '</span>' +
-          '</div>' +
-        '</div>';
-      container.appendChild(item);
-    });
+    // 语音日志已合并到AI命令助手面板中，通过addCmdMessage显示
+    // 保留此函数以免break现有addVoiceLog调用
   }
 
   function escapeHtml(str) {
@@ -1127,17 +1096,9 @@ ${bodyContent}
   function updateUndoUI() {
     const undoBtn = $('#btn-undo');
     const redoBtn = $('#btn-redo');
-    const undoSidebar = $('#btn-undo-sidebar');
-    const redoSidebar = $('#btn-redo-sidebar');
-    const countEl = $('#undo-count');
 
-    [undoBtn, undoSidebar].forEach(b => {
-      if (b) { b.disabled = undoStack.length === 0; }
-    });
-    [redoBtn, redoSidebar].forEach(b => {
-      if (b) { b.disabled = redoStack.length === 0; }
-    });
-    if (countEl) countEl.textContent = undoStack.length;
+    if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = redoStack.length === 0;
   }
 
   function updateHistoryUI() { /* side effect: empty since no history-node DOM now, harmless */ }
@@ -1705,23 +1666,35 @@ ${bodyContent}
 
     // 更新语音按钮UI
     function updateVoiceUI(active) {
-      const btn = document.getElementById('btn-voice');
+      const btn = document.getElementById('btn-ai-assistant');
       if (!btn) return;
       if (active) {
         btn.classList.add('active');
         btn.innerHTML = '<i class="fas fa-microphone-lines"></i> 聆听中...';
       } else {
         btn.classList.remove('active');
-        btn.innerHTML = '<i class="fas fa-microphone"></i> 语音';
+        btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> 助手';
+      }
+      // 同步更新面板内的语音按钮状态
+      const panelVoiceBtn = els.cmdVoiceBtn;
+      if (panelVoiceBtn) {
+        panelVoiceBtn.classList.toggle('recording', active);
+        panelVoiceBtn.style.color = active ? '#ef4444' : '';
+        panelVoiceBtn.style.borderColor = active ? 'rgba(239,68,68,0.4)' : '';
+      }
+      // 更新面板内的语音状态条
+      const statusBar = els.voiceStatusBar;
+      if (statusBar) {
+        statusBar.style.display = active ? 'flex' : 'none';
       }
     }
 
-    // 更新底部状态栏
+    // 更新语音状态文本
     function updateVoiceStatus(text) {
-      const el = document.getElementById('voice-status-text');
+      const el = els.voiceStatusText;
       if (el) el.textContent = text;
-      const wrap = document.getElementById('voice-status');
-      if (wrap) wrap.classList.add('show');
+      const bar = els.voiceStatusBar;
+      if (bar) bar.style.display = 'flex';
     }
 
 return { start, stop, toggle, isListening: () => isListening, colorMap, init, processCommand };
@@ -2002,7 +1975,7 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
   ═══════════════════════════════════════════════════════════════ */
 
   function bindVoiceEvents() {
-    const btnVoice = document.getElementById('btn-voice');
+    const btnVoice = document.getElementById('btn-ai-assistant');
     const btnCloseHelp = document.getElementById('btn-close-voice-help');
     const btnHelpClose = document.getElementById('btn-voice-help-close');
     const modalHelp = document.getElementById('voice-help-modal');
@@ -2026,6 +1999,14 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
         if (!VoiceEngine) {
           showToast('当前浏览器不支持语音识别，请使用 Chrome/Safari/Edge', 'error');
           return;
+        }
+        // 如果面板未显示，先显示并展开面板
+        const panel = els.aiAssistantPanel;
+        if (panel) {
+          panel.classList.add('show');
+          panel.classList.remove('collapsed');
+          cmdAssistantOpen = true;
+          if (els.aiAssistantArrow) els.aiAssistantArrow.className = 'fas fa-chevron-down';
         }
         VoiceEngine.toggle();
       });
@@ -2063,16 +2044,6 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
       }
     });
 
-    // 语音命令历史面板 - 展开/收起
-    const voiceLogToggle = document.getElementById('voice-log-toggle');
-    const voiceLogPanel = document.getElementById('voice-log-panel');
-    const voiceLogArrow = document.getElementById('voice-log-arrow');
-    if (voiceLogToggle && voiceLogPanel) {
-      voiceLogToggle.addEventListener('click', () => {
-        const isCollapsed = voiceLogPanel.classList.toggle('collapsed');
-        if (voiceLogArrow) voiceLogArrow.classList.toggle('rotated', !isCollapsed);
-      });
-    }
   }
 
   /* ═══════════════════════════════════════════════════════════════
@@ -2085,22 +2056,31 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
   let cmdUnreadCount = 0;
 
   function initCmdAssistant() {
-    const panel = document.getElementById('cmd-assistant');
-    const header = document.getElementById('cmd-assistant-header');
-    const toggleBtn = document.getElementById('cmd-assistant-toggle');
-    const arrow = document.getElementById('cmd-assistant-arrow');
-    const body = document.getElementById('cmd-assistant-body');
-    const textInput = document.getElementById('cmd-text-input');
-    const sendBtn = document.getElementById('cmd-send-btn');
-    const voiceBtn = document.getElementById('cmd-voice-btn');
-    const clearBtn = document.getElementById('cmd-clear-history');
-    const messages = document.getElementById('cmd-assistant-messages');
+    const panel = els.aiAssistantPanel;
+    const header = els.aiAssistantHeader;
+    const toggleBtn = els.aiAssistantToggle;
+    const arrow = els.aiAssistantArrow;
+    const body = els.aiAssistantBody;
+    const textInput = els.cmdTextInput;
+    const sendBtn = els.cmdSendBtn;
+    const voiceBtn = els.cmdVoiceBtn;
+    const clearBtn = els.cmdClearHistory;
+    const messages = els.aiAssistantMessages;
+    const closeBtn = els.aiAssistantClose;
+
+    // 默认显示并展开
+    if (panel) {
+      panel.classList.add('show');
+      panel.classList.remove('collapsed');
+    }
+    cmdAssistantOpen = true;
+    if (els.aiAssistantArrow) els.aiAssistantArrow.className = 'fas fa-chevron-down';
 
     // 展开/收起
     function togglePanel() {
       cmdAssistantOpen = !cmdAssistantOpen;
       panel.classList.toggle('collapsed', !cmdAssistantOpen);
-      arrow.className = cmdAssistantOpen ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+      if (arrow) arrow.className = cmdAssistantOpen ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
       if (cmdAssistantOpen) {
         cmdUnreadCount = 0;
         updateBadge();
@@ -2109,12 +2089,18 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
 
     if (header) header.addEventListener('click', (e) => {
       // 不响应按钮点击
-      if (e.target.closest('.cmd-assistant-btn')) return;
+      if (e.target.closest('.btn-icon')) return;
       if (!cmdAssistantOpen) togglePanel();
     });
     if (toggleBtn) toggleBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       togglePanel();
+    });
+
+    // 关闭按钮 - 隐藏面板（可通过header按钮重新打开）
+    if (closeBtn) closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (panel) panel.classList.remove('show');
     });
 
     // 文字命令输入
@@ -2159,18 +2145,22 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
     // 清空历史
     if (clearBtn) clearBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const messagesEl = document.getElementById('cmd-assistant-messages');
+      const messagesEl = els.aiAssistantMessages;
       if (messagesEl) {
         messagesEl.innerHTML = '<div class="cmd-welcome">' +
-          '<div class="cmd-welcome-icon"><i class="fas fa-wand-magic-sparkles"></i></div>' +
-          '<div class="cmd-welcome-text">👋 你好！我是命令助手</div>' +
-          '<div class="cmd-welcome-desc">你可以通过语音或文字下达编辑指令，所有操作记录都会显示在这里</div>' +
-          '<div class="cmd-welcome-examples">' +
-'<div class="cmd-example-chip" data-cmd="把第6稿改成第7稿"><i class="fas fa-text"></i> 替换文字</div>' +
-'<div class="cmd-example-chip" data-cmd="改成2025年"><i class="fas fa-pen"></i> 改选中文字</div>' +
-'<div class="cmd-example-chip" data-cmd="把标题改成红色"><i class="fas fa-palette"></i> 改颜色</div>' +
-'<div class="cmd-example-chip" data-cmd="把标题加粗"><i class="fas fa-bold"></i> 加粗</div>' +
-'<div class="cmd-example-chip" data-cmd="撤销"><i class="fas fa-rotate-left"></i> 撤销</div>' +
+          '<div style="text-align:center; padding:20px 0;">' +
+            '<div style="width:48px;height:48px;border-radius:50%;background:rgba(99,102,241,0.1);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;color:var(--accent);font-size:20px;">' +
+              '<i class="fas fa-wand-magic-sparkles"></i>' +
+            '</div>' +
+            '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">👋 你好！我是命令助手</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:16px;">你可以通过语音或文字下达编辑指令<br/>所有操作记录都会显示在这里</div>' +
+            '<div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:center;">' +
+              '<div class="cmd-example-chip" data-cmd="把第6稿改成第7稿"><i class="fas fa-text" style="font-size:9px;"></i> 替换文字</div>' +
+              '<div class="cmd-example-chip" data-cmd="改成2025年"><i class="fas fa-pen" style="font-size:9px;"></i> 改选中文字</div>' +
+              '<div class="cmd-example-chip" data-cmd="把标题改成红色"><i class="fas fa-palette" style="font-size:9px;"></i> 改颜色</div>' +
+              '<div class="cmd-example-chip" data-cmd="把标题加粗"><i class="fas fa-bold" style="font-size:9px;"></i> 加粗</div>' +
+              '<div class="cmd-example-chip" data-cmd="撤销"><i class="fas fa-rotate-left" style="font-size:9px;"></i> 撤销</div>' +
+            '</div>' +
           '</div>' +
         '</div>';
         bindExampleChips();
@@ -2190,8 +2180,7 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
       chip.addEventListener('click', () => {
         const cmd = chip.dataset.cmd;
         if (cmd) {
-          const textInput = document.getElementById('cmd-text-input');
-          if (textInput) textInput.value = cmd;
+          if (els.cmdTextInput) els.cmdTextInput.value = cmd;
           // 直接执行
           addCmdMessage('user', cmd);
           setTimeout(() => processCommandPublic(cmd), 100);
@@ -2201,7 +2190,7 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
   }
 
   function updateBadge() {
-    const badge = document.getElementById('cmd-assistant-badge');
+    const badge = document.getElementById('ai-assistant-badge');
     if (badge) {
       if (cmdUnreadCount > 0) {
         badge.style.display = 'flex';
@@ -2219,7 +2208,7 @@ return { start, stop, toggle, isListening: () => isListening, colorMap, init, pr
    * @param {string} [retryCmd] - 可选：重试命令文本
    */
   function addCmdMessage(role, text, retryCmd) {
-    const container = document.getElementById('cmd-assistant-messages');
+    const container = els.aiAssistantMessages;
     if (!container) return;
 
     // 移除欢迎消息（如果有）
