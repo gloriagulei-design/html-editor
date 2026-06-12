@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>网页预览测试</title>
+<style>
+  /* ============ 基础重置 ============ */
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#f0f2f5;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+
+  /* ============ 手机视口模拟容器 ============ */
+  .phone-viewport{
+    width:100%;
+    max-width:430px;
+    margin:0 auto;
+    background:#ffffff;
+    position:relative;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+
+  /* ============ 顶部Hero区域 ============ */
+  .hero{
+    position:relative;
+    height:220px;
+    background:linear-gradient(135deg, #ff6b6b 0%, #feca57 50%, #ff9f43 100%);
+    border-radius:0 0 30px 30px;
+    overflow:hidden;
+    display:flex;
+    align-items:center;
+    padding:0 24px;
+  }
+  .hero::before{
+    content:'';
+    position:absolute;
+    top:30px; right:30px;
+    width:120px; height:120px;
+    border-radius:50%;
+    background:rgba(255,255,255,0.12);
+  }
+  .hero::after{
+    content:'';
+    position:absolute;
+    bottom:-40px; left:-40px;
+    width:160px; height:160px;
+    border-radius:50%;
+    background:rgba(255,255,255,0.08);
+  }
+  .hero-text h1{
+    font-size:26px;
+    color:#fff;
+    font-weight:700;
+    letter-spacing:1px;
+    line-height:1.2;
+    text-shadow:0 2px 8px rgba(0,0,0,0.15);
+  }
+  .hero-text p{
+    font-size:14px;
+    color:rgba(255,255,255,0.85);
+    margin-top:8px;
+  }
+
+  /* ============ 用户信息卡片 ============ */
+  .user-card{
+    margin:-50px 16px 16px;
+    background:#fff;
+    border-radius:20px;
+    padding:20px;
+    box-shadow:0 8px 30px rgba(0,0,0,0.08);
+    position:relative;
+    z-index:2;
+    display:flex;
+    align-items:center;
+    gap:14px;
+  }
+  .avatar{
+    width:60px; height:60px;
+    border-radius:50%;
+    background:linear-gradient(135deg, #667eea, #764ba2);
+    display:flex; align-items:center; justify-content:center;
+    color:#fff;
+    font-size:24px;
+    font-weight:700;
+    flex-shrink:0;
+  }
+  .user-info h3{
+    font-size:18px;
+    color:#2d3436;
+    margin-bottom:4px;
+  }
+  .user-info span{
+    font-size:13px;
+    color:#636e72;
+    display:block;
+  }
+
+  /* ============ 数据概览(横向滚动) ============ */
+  .stats-row{
+    display:flex;
+    gap:12px;
+    padding:0 16px;
+    margin-bottom:20px;
+    overflow-x:auto;
+    scroll-snap-type:x mandatory;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+  }
+  .stats-row::-webkit-scrollbar{ display:none; }
+  .stat-card{
+    flex:0 0 110px;
+    background:#fff;
+    border-radius:16px;
+    padding:16px 12px;
+    text-align:center;
+    box-shadow:0 4px 15px rgba(0,0,0,0.06);
+    scroll-snap-align:start;
+  }
+  .stat-card .num{
+    font-size:22px;
+    font-weight:700;
+    color:#2d3436;
+  }
+  .stat-card .label{
+    font-size:11px;
+    color:#b2bec3;
+    margin-top:4px;
+  }
+  .stat-card:nth-child(1) .num { color:#e17055; }
+  .stat-card:nth-child(2) .num { color:#00b894; }
+  .stat-card:nth-child(3) .num { color:#0984e3; }
+  .stat-card:nth-child(4) .num { color:#fdcb6e; }
+
+  /* ============ 宫格功能区 ============ */
+  .grid-menu{
+    display:grid;
+    grid-template-columns:repeat(4, 1fr);
+    gap:8px;
+    padding:0 16px;
+    margin-bottom:20px;
+  }
+  .grid-item{
+    background:#fff;
+    border-radius:14px;
+    padding:14px 4px;
+    text-align:center;
+    box-shadow:0 2px 10px rgba(0,0,0,0.04);
+    transition:transform 0.2s;
+  }
+  .grid-item:active{ transform:scale(0.95); }
+  .grid-icon{
+    width:44px; height:44px;
+    border-radius:12px;
+    margin:0 auto 8px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:22px;
+  }
+  .grid-icon.red{ background:#fff0f0; }
+  .grid-icon.green{ background:#f0fff4; }
+  .grid-icon.blue{ background:#f0f4ff; }
+  .grid-icon.yellow{ background:#fffbeb; }
+  .grid-item p{
+    font-size:12px;
+    color:#2d3436;
+  }
+
+  /* ============ 订单列表 ============ */
+  .section-title{
+    font-size:17px;
+    font-weight:700;
+    color:#2d3436;
+    padding:0 16px;
+    margin-bottom:12px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+  .section-title a{
+    font-size:13px;
+    color:#636e72;
+    text-decoration:none;
+  }
+  .order-list{
+    padding:0 16px;
+    margin-bottom:24px;
+  }
+  .order-item{
+    background:#fff;
+    border-radius:16px;
+    padding:14px 16px;
+    margin-bottom:10px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.04);
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  .order-img{
+    width:64px; height:64px;
+    border-radius:12px;
+    background:linear-gradient(135deg, #a8edea, #fed6e3);
+    flex-shrink:0;
+  }
+  .order-img.red{
+    background:linear-gradient(135deg, #ffecd2, #fcb69f);
+  }
+  .order-img.blue{
+    background:linear-gradient(135deg, #e0c3fc, #8ec5fc);
+  }
+  .order-detail{
+    flex:1;
+  }
+  .order-detail h4{
+    font-size:15px;
+    color:#2d3436;
+    margin-bottom:4px;
+  }
+  .order-detail p{
+    font-size:12px;
+    color:#b2bec3;
+  }
+  .order-price{
+    font-size:16px;
+    font-weight:700;
+    color:#e17055;
+    text-align:right;
+  }
+  .order-status{
+    font-size:11px;
+    color:#00b894;
+    background:#e6faf5;
+    padding:2px 8px;
+    border-radius:6px;
+    display:inline-block;
+    margin-top:4px;
+  }
+
+  /* ============ 底部导航 ============ */
+  .tabbar{
+    position:fixed;
+    bottom:0; left:50%;
+    transform:translateX(-50%);
+    width:100%; max-width:430px;
+    background:rgba(255,255,255,0.92);
+    backdrop-filter:blur(20px);
+    display:flex;
+    justify-content:space-around;
+    padding:8px 0 calc(8px + env(safe-area-inset-bottom));
+    border-top:1px solid rgba(0,0,0,0.05);
+    z-index:999;
+  }
+  .tab-item{
+    text-align:center;
+    padding:4px 0;
+    position:relative;
+  }
+  .tab-item span{
+    display:block;
+    width:24px; height:24px;
+    background:#b2bec3;
+    border-radius:6px;
+    margin:0 auto 3px;
+  }
+  .tab-item span.home{
+    background:#e17055;
+  }
+  .tab-item label{
+    font-size:10px;
+    color:#b2bec3;
+  }
+  .tab-item.active label{
+    color:#e17055;
+    font-weight:600;
+  }
+
+  /* ============ 底部占位 ============ */
+  .footer-spacer{ height:80px; }
+
+  /* ============ 打印适配 ============ */
+  @media print{
+    body { background:#fff; }
+    .phone-viewport{
+      max-width:none;
+      margin:0;
+      box-shadow:none;
+    }
+    .tabbar{ display:none; }
+  }
+</style>
+</head>
+<body>
+  <div class="phone-viewport">
+    <!-- Hero -->
+    <div class="hero">
+      <div class="hero-text">
+        <h1>早安，王小明</h1>
+        <p>今天是你坚持运动的第 15 天 💪</p>
+      </div>
+    </div>
+
+    <!-- 用户卡片 -->
+    <div class="user-card">
+      <div class="avatar">王</div>
+      <div class="user-info">
+        <h3>王小明</h3>
+        <span>高级会员 · 积分 2,850</span>
+      </div>
+    </div>
+
+    <!-- 数据概览 -->
+    <div class="stats-row">
+      <div class="stat-card"><div class="num">12</div><div class="label">今日订单</div></div>
+      <div class="stat-card"><div class="num">￥1,280</div><div class="label">今日营收</div></div>
+      <div class="stat-card"><div class="num">89</div><div class="label">待处理</div></div>
+      <div class="stat-card"><div class="num">4.9</div><div class="label">评分</div></div>
+    </div>
+
+    <!-- 宫格菜单 -->
+    <div class="grid-menu">
+      <div class="grid-item">
+        <div class="grid-icon red">🏠</div>
+        <p>首页</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon green">🛒</div>
+        <p>商城</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon blue">📋</div>
+        <p>订单</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon yellow">👤</div>
+        <p>我的</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon red">💰</div>
+        <p>钱包</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon green">📅</div>
+        <p>日程</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon blue">🎁</div>
+        <p>优惠</p>
+      </div>
+      <div class="grid-item">
+        <div class="grid-icon yellow">⚙️</div>
+        <p>设置</p>
+      </div>
+    </div>
+
+    <!-- 近期订单 -->
+    <div class="section-title">近期订单 <a href="#">查看全部 ›</a></div>
+    <div class="order-list">
+      <div class="order-item">
+        <div class="order-img"></div>
+        <div class="order-detail">
+          <h4>无线蓝牙耳机 Pro</h4>
+          <p>2026-06-11 14:30 下单</p>
+          <span class="order-status">已完成</span>
+        </div>
+        <div class="order-price">￥299</div>
+      </div>
+      <div class="order-item">
+        <div class="order-img red"></div>
+        <div class="order-detail">
+          <h4>智能运动手环 X3</h4>
+          <p>2026-06-10 09:15 下单</p>
+          <span class="order-status">已完成</span>
+        </div>
+        <div class="order-price">￥199</div>
+      </div>
+      <div class="order-item">
+        <div class="order-img blue"></div>
+        <div class="order-detail">
+          <h4>便携咖啡机 Mini</h4>
+          <p>2026-06-09 18:45 下单</p>
+          <span class="order-status">配送中</span>
+        </div>
+        <div class="order-price">￥459</div>
+      </div>
+    </div>
+
+    <div class="footer-spacer"></div>
+  </div>
+
+  <!-- 底部TabBar -->
+  <div class="tabbar">
+    <div class="tab-item active">
+      <span class="home"></span>
+      <label>首页</label>
+    </div>
+    <div class="tab-item">
+      <span></span>
+      <label>发现</label>
+    </div>
+    <div class="tab-item">
+      <span></span>
+      <label>消息</label>
+    </div>
+    <div class="tab-item">
+      <span></span>
+      <label>我的</label>
+    </div>
+  </div>
+</body>
+</html>

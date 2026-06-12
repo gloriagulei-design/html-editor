@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>复杂HTML模板</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  background: #f5f6fa;
+  color: #333;
+  padding: 20px;
+}
+.container {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* 头部区域 */
+.header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 16px;
+  padding: 30px;
+  margin-bottom: 24px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.header::before {
+  content: '';
+  position: absolute;
+  top: 20%; right: 5%;
+  width: 80px; height: 80px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 50%;
+}
+.header h1 {
+  color: #fff;
+  font-size: 28px;
+  margin-bottom: 8px;
+  font-weight: 800;
+}
+.header p {
+  color: rgba(255,255,255,0.85);
+  font-size: 14px;
+}
+
+/* 卡片 */
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+}
+.card h2 {
+  font-size: 18px;
+  margin-bottom: 12px;
+  color: #333;
+}
+.card p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #555;
+}
+
+/* 图片区域 */
+.image-section {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.img-box {
+  width: 48%;
+  height: 140px;
+  border-radius: 12px;
+  background-size: cover;
+  background-position: center;
+}
+.img-box.img1 {
+  background-image: url('https://images.unsplash.com/photo-1512486130939-2c4f79935e4f?w=400&h=300&fit=crop');
+}
+.img-box.img2 {
+  background-image: url('https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=400&h=300&fit=crop');
+}
+
+/* 数据表格 */
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+}
+table.data-table th,
+table.data-table td {
+  padding: 12px 8px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+table.data-table th {
+  background: #667eea22;
+  color: #667eea;
+  font-weight: 600;
+}
+table.data-table tr:nth-child(even) {
+  background: #fafafa;
+}
+
+/* 标签和徽章 */
+.tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.tag {
+  background: #667eea22;
+  color: #667eea;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 进度条 */
+.progress-item {
+  margin-top: 16px;
+}
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.progress-bar {
+  width: 100%;
+  height: 10px;
+  background: #eee;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 5px;
+}
+.pf-blue { background: #667eea; }
+.pf-green { background: #48dbfb; }
+.pf-red { background: #ff6b6b; }
+
+/* 统计数字 */
+.stats-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.stat {
+  text-align: center;
+  width: 30%;
+}
+.stat-number {
+  font-size: 24px;
+  font-weight: 800;
+  color: #667eea;
+}
+.stat-label {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+
+/* 优惠券卡片 */
+.coupon {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border-radius: 12px;
+  padding: 20px;
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  margin-top: 12px;
+}
+.coupon h3 {
+  font-size: 22px;
+  margin-bottom: 4px;
+}
+.coupon p {
+  color: rgba(255,255,255,0.9);
+  font-size: 13px;
+}
+.coupon-code {
+  display: inline-block;
+  background: rgba(255,255,255,0.2);
+  padding: 6px 20px;
+  border-radius: 6px;
+  font-weight: 700;
+  margin-top: 10px;
+  font-size: 16px;
+  letter-spacing: 2px;
+}
+
+/* 底部按钮 */
+.footer-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+.btn {
+  flex: 1;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.btn-primary {
+  background: #667eea;
+  color: #fff;
+}
+.btn-secondary {
+  background: #fff;
+  color: #667eea;
+  border: 2px solid #667eea;
+}
+
+/* 列表 */
+.feature-list {
+  list-style: none;
+  margin-top: 12px;
+}
+.feature-list li {
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  border-bottom: 1px dashed #eee;
+}
+.feature-list li::before {
+  content: '✓';
+  color: #48dbfb;
+  font-weight: 800;
+  margin-right: 10px;
+}
+
+/* 时间线 */
+.timeline {
+  margin-top: 16px;
+  padding-left: 20px;
+  border-left: 2px solid #eee;
+}
+.timeline-item {
+  padding-bottom: 16px;
+  position: relative;
+}
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: -24px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  background: #667eea;
+  border-radius: 50%;
+}
+.timeline-time {
+  font-size: 12px;
+  color: #999;
+}
+.timeline-text {
+  font-size: 14px;
+  color: #333;
+  margin-top: 4px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>2024年度工作报告</h1>
+    <p>点击此处编辑标题内容</p>
+  </div>
+
+  <div class="card">
+    <h2>数据概览</h2>
+    <div class="stats-row">
+      <div class="stat">
+        <div class="stat-number">1,230</div>
+        <div class="stat-label">新增用户</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number">92%</div>
+        <div class="stat-label">达成率</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number">¥56K</div>
+        <div class="stat-label">营收</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>项目截图</h2>
+    <div class="image-section">
+      <div class="img-box img1"></div>
+      <div class="img-box img2"></div>
+    </div>
+    <p>以上是本季度重要项目的界面截图，展示了我们的核心产品线。</p>
+  </div>
+
+  <div class="card">
+    <h2>销售数据</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th>地区</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>华东</td><td>¥120K</td><td>¥150K</td><td>¥180K</td><td>¥200K</td></tr>
+        <tr><td>华南</td><td>¥90K</td><td>¥110K</td><td>¥140K</td><td>¥160K</td></tr>
+        <tr><td>华北</td><td>¥80K</td><td>¥95K</td><td>¥120K</td><td>¥145K</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>项目进度</h2>
+    <div class="progress-item">
+      <div class="progress-label"><span>前端开发</span><span>85%</span></div>
+      <div class="progress-bar"><div class="progress-fill pf-blue" style="width:85%"></div></div>
+    </div>
+    <div class="progress-item">
+      <div class="progress-label"><span>后端API</span><span>90%</span></div>
+      <div class="progress-bar"><div class="progress-fill pf-green" style="width:90%"></div></div>
+    </div>
+    <div class="progress-item">
+      <div class="progress-label"><span>测试验收</span><span>45%</span></div>
+      <div class="progress-bar"><div class="progress-fill pf-red" style="width:45%"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>核心功能</h2>
+    <ul class="feature-list">
+      <li>实时数据同步与更新</li>
+      <li>多用户协同编辑</li>
+      <li>智能报表自动生成</li>
+      <li>跨平台数据导出</li>
+    </ul>
+  </div>
+
+  <div class="card" style="padding: 0; overflow: hidden;">
+    <div class="coupon">
+      <h3>年终特惠</h3>
+      <p>全场商品8折优惠</p>
+      <div class="coupon-code">CODE2024</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>里程碑</h2>
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="timeline-time">2024-01</div>
+        <div class="timeline-text">项目启动，组建核心团队</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-time">2024-05</div>
+        <div class="timeline-text">完成MVP版本开发</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-time">2024-09</div>
+        <div class="timeline-text">正式上线，获取首批用户</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>分类标签</h2>
+    <div class="tags">
+      <span class="tag">人工智能</span>
+      <span class="tag">大数据</span>
+      <span class="tag">云计算</span>
+      <span class="tag">SaaS</span>
+      <span class="tag">数字化转型</span>
+    </div>
+  </div>
+
+  <div class="footer-actions">
+    <button class="btn btn-primary">确认提交</button>
+    <button class="btn btn-secondary">保存草稿</button>
+  </div>
+</div>
+</body>
+</html>
