@@ -452,23 +452,52 @@ async function createRenderedPage(htmlContent, options = {}) {
 
 /**
  * 模式 A：打印模式 HTML → PDF（单页长 PDF，保持文字可选）
- * 
+ *
  * 核心优化：
  * 1. 注入全面CSS覆盖，禁止分页、强制保留背景色
- * 2. 精确设置页面尺寸为内容实际尺寸
- * 3. 设置 margin 为 0 避免额外空白
+ * 2. 检测宽度后切换 viewport，确保高度测量与PDF宽度一致
+ * 3. 重新测量内容高度，避免宽度变化导致的截断或空白
+ * 4. 设置 margin 为 0 避免额外空白
  */
 async function convertHtmlToPdfPrint(htmlContent, options = {}) {
-  const { page, contentHeight, viewport } = await createRenderedPage(htmlContent, options);
+  const { page, contentHeight: initialHeight, viewport } = await createRenderedPage(htmlContent, options);
 
   try {
+    const targetWidth = viewport.width;
+
+    // ★ 关键：切换 viewport 到目标宽度，让内容在正确宽度下重新布局
+    // 这样测量出的高度才与PDF纸张宽度匹配，避免截断或空白
+    if (targetWidth !== DEFAULT_VIEWPORT.width) {
+      console.log(`🔄 [打印模式] 切换 viewport: ${DEFAULT_VIEWPORT.width}px → ${targetWidth}px，重新测量布局`);
+      await page.setViewport({ width: targetWidth, height: DEFAULT_VIEWPORT.height });
+      await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
+
+      // 展开隐藏内容（viewport切换后可能需要重新执行）
+      await page.evaluate(() => {
+        document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
+        document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
+        const sug = document.getElementById('sugGrid');
+        if (sug) sug.style.display = '';
+      });
+      await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
+    }
+
+    // ★ 在目标宽度下重新测量内容高度（文字换行可能导致高度变化）
+    let contentHeight = await page.evaluate(() => Math.max(
+      document.documentElement.scrollHeight || 0,
+      document.body ? document.body.scrollHeight : 0
+    ));
+    contentHeight = Math.max(contentHeight, 100);
+
+    console.log(`📐 [打印模式] 最终PDF尺寸: ${targetWidth}px × ${contentHeight}px (初始高度=${initialHeight}px)`);
+
     // 注入打印覆盖CSS
     await page.addStyleTag({ content: PDF_PRINT_OVERRIDE_CSS });
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
     // 生成单页长PDF
     const pdfBuffer = await page.pdf({
-      width: `${viewport.width}px`,
+      width: `${targetWidth}px`,
       height: `${contentHeight}px`,
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
