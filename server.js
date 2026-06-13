@@ -132,9 +132,8 @@ ${bodyContent}
     }
   }
 
-  // ── Step 8: 禁用/覆盖 @media print 样式（防止打印时样式变化） ──
-  // 将所有 @media print 块替换为空（我们在后面会注入自己的打印覆盖CSS）
-  html = html.replace(/@media\s+print\s*\{[\s\S]*?\}/gi, '');
+  // ── Step 8: 保留 @media print 样式（HTML作者可能依赖这些样式） ──
+  // 不删除 @media print，避免内容样式丢失
 
   // ── Step 9: 确保基础字体栈存在（防止系统无字体时渲染异常） ──
   const hasFontFamily = /font-family/i.test(html);
@@ -315,10 +314,9 @@ const PDF_PRINT_OVERRIDE_CSS = `
  * 公共：创建 Puppeteer 页面，渲染 HTML，返回 page 和测量信息
  */
 async function createRenderedPage(htmlContent, options = {}) {
-  // ★ 预处理 HTML：规范化各种格式差异
+  // ★ 预处理 HTML：规范化各种格式差异但保留内容完整性
   htmlContent = normalizeHtmlForPdf(htmlContent);
 
-  // ★ 自动检测 HTML 设计宽度：先以宽 viewport 渲染，测量内容实际宽度
   // 如果前端传了 pdfWidth 且不是 'auto'，则使用指定宽度；否则自动检测
   const userPdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
     ? parseInt(options.pdfWidth, 10)
@@ -337,7 +335,6 @@ async function createRenderedPage(htmlContent, options = {}) {
     page = await browser.newPage();
   } catch (pageErr) {
     console.error('❌ 创建页面失败，尝试重启浏览器:', pageErr.message);
-    // 重启浏览器后重试
     try { await browser.close(); } catch (_) {}
     browserInstance = null;
     try {
@@ -348,31 +345,12 @@ async function createRenderedPage(htmlContent, options = {}) {
     }
   }
 
-  // Step0: 先以默认PC宽度渲染，用于检测实际内容宽度
+  // Step0: 使用 setContent 直接加载 HTML（比 file:// 更可靠，避免资源加载问题）
   await page.setViewport(DEFAULT_VIEWPORT);
-
-  // 写临时文件并用 file:// 加载
-  const tmpHtmlPath = join(TMP_DIR, `pdf-${randomUUID()}.html`);
-  writeFileSync(tmpHtmlPath, htmlContent, 'utf-8');
-
-  try {
-    // ★ 优化加载策略：先用 domcontentloaded 确保DOM就绪，再短暂等待网络空闲
-    await page.goto(`file://${tmpHtmlPath}`, {
-      waitUntil: 'domcontentloaded',
-      timeout: TIMEOUTS.pageLoad
-    });
-    // 额外等待网络请求完成（最多3秒，避免外部资源阻塞太久）
-    try {
-      await page.waitForNetworkIdle({ timeout: 3000, idleTime: 500 });
-    } catch (_) {
-      // 网络未完全空闲也没关系，大部分内容已渲染
-    }
-  } catch (loadErr) {
-    console.warn('⚠️ 页面加载超时:', loadErr.message);
-    throw new Error('页面渲染超时，请检查 HTML 内容是否包含无法加载的资源');
-  } finally {
-    try { unlinkSync(tmpHtmlPath); } catch (_) {}
-  }
+  await page.setContent(htmlContent, {
+    waitUntil: 'networkidle0',
+    timeout: TIMEOUTS.pageLoad
+  });
 
   // 等待 canvas 图表完成渲染
   const hasCanvas = await page.evaluate(() =>
@@ -390,195 +368,81 @@ async function createRenderedPage(htmlContent, options = {}) {
   }
   await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
 
-  // Step1: 注入背景色和打印颜色保留CSS
-  await page.evaluate(() => {
-    const style = document.createElement('style');
-    style.id = 'pdf-bg-override';
-    style.textContent = `
-      html, body {
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-        color-adjust: exact !important;
-      }
-    `;
-    document.head.appendChild(style);
-    const htmlBg = getComputedStyle(document.documentElement).backgroundColor;
-    const bodyBg = getComputedStyle(document.body).backgroundColor;
-    if (!htmlBg || htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent') {
-      document.documentElement.style.backgroundColor = '#ffffff';
-    }
-    if (!bodyBg || bodyBg === 'rgba(0, 0, 0, 0)' || bodyBg === 'transparent') {
-      document.body.style.backgroundColor = '#ffffff';
-    }
+  // Step1: 展开隐藏内容 + 检测背景色
+  const bgColor = await page.evaluate(() => {
+    const cssVar = getComputedStyle(document.documentElement)
+      .getPropertyValue('--bg').trim();
+    return cssVar || getComputedStyle(document.body || document.documentElement)
+      .backgroundColor || '#ffffff';
   });
 
-  // Step2: ★ 自动检测 HTML 的设计宽度
-  let detectedWidth;
-  if (userPdfWidth) {
-    // 用户指定了宽度，直接使用
-    detectedWidth = userPdfWidth;
-  } else {
-    // 自动检测：智能识别 HTML 的实际设计宽度
-    detectedWidth = await page.evaluate(() => {
-      // 方法1: 遍历所有可见元素，取最大 right 边界
-      let maxRight = 0;
-      const allElements = document.querySelectorAll('body *');
-      allElements.forEach(el => {
-        const cs = getComputedStyle(el);
-        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-        const rect = el.getBoundingClientRect();
-        if (rect.right > maxRight) {
-          maxRight = rect.right;
-        }
-      });
-
-      // 方法2: 检查 body 和主要容器的 max-width（识别居中布局的移动端设计）
-      // 很多移动端模板使用 max-width: 390px + margin: 0 auto 居中
-      let contentMaxWidth = 0;
-      const checkElements = [document.body, ...document.querySelectorAll('body > *')];
-      checkElements.forEach(el => {
-        if (!el) return;
-        const cs = getComputedStyle(el);
-        // 检查 max-width
-        if (cs.maxWidth && cs.maxWidth !== 'none') {
-          const mw = parseFloat(cs.maxWidth);
-          if (mw > 0 && mw < 800) { // 小于800px的max-width很可能是移动端设计
-            contentMaxWidth = Math.max(contentMaxWidth, mw);
-          }
-        }
-        // 检查 width 的固定值
-        if (cs.width && cs.width !== 'auto') {
-          const w = parseFloat(cs.width);
-          if (w > 0 && w < 800) {
-            contentMaxWidth = Math.max(contentMaxWidth, w);
-          }
-        }
-      });
-
-      // 方法3: 检查 viewport meta 的 width 声明
-      let viewportWidth = 0;
-      const viewportMeta = document.querySelector('meta[name="viewport"]');
-      if (viewportMeta) {
-        const content = viewportMeta.getAttribute('content') || '';
-        const widthMatch = content.match(/width\s*=\s*(\d+)/);
-        if (widthMatch) {
-          viewportWidth = parseInt(widthMatch[1], 10);
-        }
-      }
-
-      // 综合判断：如果有明显的移动端 max-width 声明，使用它
-      if (contentMaxWidth > 300 && contentMaxWidth <= 500) {
-        return Math.ceil(contentMaxWidth);
-      }
-      // 如果有 viewport width 声明且是移动端宽度
-      if (viewportWidth > 300 && viewportWidth <= 500) {
-        return Math.ceil(viewportWidth);
-      }
-      // 否则使用元素实际渲染宽度
-      const bodyWidth = document.body ? document.body.scrollWidth : 0;
-      const htmlWidth = document.documentElement ? document.documentElement.scrollWidth : 0;
-      const docWidth = Math.max(bodyWidth, htmlWidth);
-      return Math.max(Math.ceil(maxRight), docWidth, 320);
-    });
-    console.log(`📐 自动检测到内容宽度: ${detectedWidth}px`);
-  }
-
-  // ★ 根据检测到的宽度，判断是否为手机端设计
-  // 手机端设计：宽度 <= 500px（如375/390/414等），用检测到的宽度
-  // PC端设计：宽度 > 500px，用检测到的宽度
-  const pdfWidth = detectedWidth;
-
-  // Step3: 设置正确的 viewport 宽度，高度暂用默认值（后续截图函数会精确调整）
-  const viewport = { width: pdfWidth, height: DEFAULT_VIEWPORT.height };
-  await page.setViewport(viewport);
-  await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
-
-  // Step4: 消除 100vh 等导致PDF空白的声明
-  await page.evaluate(() => {
-    document.querySelectorAll('[style]').forEach(el => {
-      const style = el.style;
-      ['height', 'minHeight', 'maxHeight'].forEach(prop => {
-        const val = style.getPropertyValue(prop);
-        if (val && (val.includes('vh') || val.includes('vw'))) {
-          style.setProperty(prop, 'auto', 'important');
-        }
-      });
-    });
-
-    try {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule.style) {
-              ['height', 'min-height', 'max-height'].forEach(prop => {
-                const val = rule.style.getPropertyValue(prop);
-                if (val && (val.includes('vh') || val.includes('vw'))) {
-                  rule.style.setProperty(prop, 'auto', 'important');
-                }
-              });
-            }
-            if (rule.cssRules) {
-              for (const innerRule of rule.cssRules) {
-                if (innerRule.style) {
-                  ['height', 'min-height', 'max-height'].forEach(prop => {
-                    const val = innerRule.style.getPropertyValue(prop);
-                    if (val && (val.includes('vh') || val.includes('vw'))) {
-                      innerRule.style.setProperty(prop, 'auto', 'important');
-                    }
-                  });
-                }
-              }
-            }
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
-
-    document.documentElement.style.setProperty('height', 'auto', 'important');
-    document.documentElement.style.setProperty('min-height', 'auto', 'important');
-    document.body.style.setProperty('height', 'auto', 'important');
-    document.body.style.setProperty('min-height', 'auto', 'important');
-    document.body.style.setProperty('overflow', 'visible', 'important');
-  });
-
-  await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
-
-  // 展开隐藏内容
   await page.evaluate(() => {
     document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
     document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
-    const sugGrid = document.getElementById('sugGrid');
-    if (sugGrid) sugGrid.style.display = '';
+    const sug = document.getElementById('sugGrid');
+    if (sug) sug.style.display = '';
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step5: 精确测量内容高度
-  let contentHeight = await page.evaluate(() => {
-    let maxBottom = 0;
-    const allElements = document.querySelectorAll('body *');
-    allElements.forEach(el => {
-      const cs = getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-      const rect = el.getBoundingClientRect();
-      if (rect.bottom > maxBottom) {
-        maxBottom = rect.bottom;
-      }
+  // Step2: ★ 宽度检测（如果需要）
+  let pdfWidth = DEFAULT_VIEWPORT.width;
+  if (userPdfWidth) {
+    pdfWidth = userPdfWidth;
+  } else {
+    detectedWidth = await page.evaluate(() => {
+      let maxRight = 0;
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
+        if (rect.right > maxRight) maxRight = rect.right;
+      });
+      let contentMaxWidth = 0;
+      [document.body, ...document.querySelectorAll('body > *')].forEach(el => {
+        if (!el) return;
+        const cs = getComputedStyle(el);
+        if (cs.maxWidth && cs.maxWidth !== 'none') { const mw = parseFloat(cs.maxWidth); if (mw > 0 && mw < 800) contentMaxWidth = Math.max(contentMaxWidth, mw); }
+        if (cs.width && cs.width !== 'auto') { const w = parseFloat(cs.width); if (w > 0 && w < 800) contentMaxWidth = Math.max(contentMaxWidth, w); }
+      });
+      let viewportWidth = 0;
+      const vm = document.querySelector('meta[name="viewport"]');
+      if (vm) { const c = vm.getAttribute('content') || ''; const m = c.match(/width\s*=\s*(\d+)/); if (m) viewportWidth = parseInt(m[1], 10); }
+      if (contentMaxWidth > 300 && contentMaxWidth <= 500) return Math.ceil(contentMaxWidth);
+      if (viewportWidth > 300 && viewportWidth <= 500) return Math.ceil(viewportWidth);
+      return Math.max(Math.ceil(maxRight), document.body?.scrollWidth || 0, document.documentElement?.scrollWidth || 0, 320);
     });
+    pdfWidth = detectedWidth || DEFAULT_VIEWPORT.width;
+    if (pdfWidth !== DEFAULT_VIEWPORT.width) {
+      await page.setViewport({ width: pdfWidth, height: DEFAULT_VIEWPORT.height });
+      await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
+    }
+    console.log(`📐 自动检测到内容宽度: ${pdfWidth}px`);
+  }
 
-    const scrollH = Math.max(
-      document.documentElement.scrollHeight || 0,
-      document.body ? document.body.scrollHeight : 0
-    );
+  // Step3: 测量内容高度（使用 scrollHeight，与 V12 一致）
+  let contentHeight = await page.evaluate(() => Math.max(
+    document.documentElement.scrollHeight || 0,
+    document.body ? document.body.scrollHeight : 0
+  ));
 
-    const result = Math.min(maxBottom, scrollH);
-    return Math.ceil(result + 20);
-  });
+  // Step4: 底部 filler div（消除 Chromium PDF 渲染器底部白色缝隙）
+  await page.evaluate((bg) => {
+    const filler = document.createElement('div');
+    filler.style.cssText = `height:2px;width:100%;background:${bg};`;
+    document.body.appendChild(filler);
+  }, bgColor);
 
+  contentHeight = await page.evaluate(() => Math.max(
+    document.documentElement.scrollHeight || 0,
+    document.body ? document.body.scrollHeight : 0
+  ));
+
+  // 重新测量确认
   contentHeight = Math.max(contentHeight, 100);
 
   console.log(`📐 PDF渲染参数: 宽度=${pdfWidth}px, 内容高度=${contentHeight}px`);
 
-  return { page, contentHeight, viewport };
+  return { page, contentHeight, viewport: { width: pdfWidth, height: DEFAULT_VIEWPORT.height } };
 }
 
 /**
