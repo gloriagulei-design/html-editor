@@ -671,10 +671,10 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
  * 核心：HTML → PDF 转换（自动根据模式分发）
  */
 async function convertHtmlToPdf(htmlContent, options = {}) {
-  // 如果前端显式指定了模式，尊重前端选择；否则默认 screenshot
-  const mode = options.pdfMode || 'screenshot';
+  // 如果前端显式指定了模式，尊重前端选择；否则默认 print
+  const mode = options.pdfMode || 'print';
 
-  // strategy: 优先截图模式（像素级精确），如果截图失败自动降级到打印模式
+  // strategy: print模式更快更稳定（文字可选），screenshot模式作为高级选项保留
   if (mode === 'screenshot') {
     try {
       return await convertHtmlToPdfScreenshot(htmlContent, options);
