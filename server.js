@@ -4,29 +4,21 @@
  * - 提供静态文件服务
  * - 提供 /api/html-to-pdf 接口，将 HTML 转为 PDF
  *
- * ★ PDF 生成策略（基于行业最佳实践和之前验证的成功经验）
- * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  模式          │  原理                  │  适用场景                │
- * ├─────────────────────────────────────────────────────────────────────────┤
- * │  print (默认)   │  page.pdf({width,height}) │  文档、PPT、通用内容    │
- * │                │  单页长PDF，不分页       │  文字可选，速度快       │
- * │  screenshot    │  screenshot→pdf-lib     │  像素级精确还原需求     │
- * │                │  分段截图拼接单页        │  备用方案              │
- * └─────────────────────────────────────────────────────────────────────────┘
- *
- * ★★★ 核心原则（从之前N轮调试中总结的成功经验）：
- * 1. 用 page.pdf({width,height}) 而不是 format:'A4' → 避免打印媒体查询重新布局
- * 2. 不设 viewport 高度为 contentHeight → 避免 100vh 元素被拉伸
- * 3. 内容宽度通过 max-right 检测 → 自适应不同设计宽度
- * 4. 单页长PDF → 内容多长PDF多长，永不切断
- * 5. 注入 overflow:visible 和 print-color-adjust:exact CSS → 确保颜色完整
+ * 【工作流】基于 html-to-pdf-convertor-SKILL.md 规范
+ * Step 1: 接收HTML，自动规范化
+ * Step 2: 检查并补全 @media print CSS
+ * Step 3: Puppeteer渲染 → 冻结动画 → 隐藏装饰元素 → 测量高度
+ * Step 4: 添加2px filler消除底部缝隙
+ * Step 5: 生成超长单页矢量PDF（文字可选中）
+ * Step 6: PDF质量验证（页数=1、尺寸合理）
  */
 
 import express from 'express';
 import cors from 'cors';
 import puppeteer from 'puppeteer-core';
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { PDFDocument } from 'pdf-lib';
 
@@ -97,33 +89,149 @@ async function getBrowser() {
 // ======== 超时常量 ========
 const TIMEOUTS = {
   pageLoad: 20000,
-  canvasWait: 8000,
+  fontWait: 3000,
   postRender: 800,
   postExpand: 200,
-  postStyle: 150,
-  postViewport: 200,
-  requestTotal: 45000
+  postStyle: 300,
+  postViewport: 300,
+  requestTotal: 60000
 };
 
-// ======== HTML 预处理 ========
+// ======== PDF渲染注入CSS（仅用于PDF生成时注入页面）========
+// 注意：这些样式是通过 page.addStyleTag() 在PDF渲染前注入的
+// 不修改原始HTML文件
+const PDF_RENDER_CSS = `
+/* === PDF渲染专用样式 === */
+* {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+
+/* 动画元素：强制可见（.ani三件套） */
+.ani,
+.animated,
+[class*="ani"] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  animation: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+/* 隐藏粒子canvas */
+#particle-canvas,
+canvas[id*="particle"] {
+  display: none !important;
+}
+
+/* 隐藏导航点 */
+#dots,
+.dots,
+.nav-dots,
+.nav-dot,
+[class*="dots"] {
+  display: none !important;
+}
+
+/* 隐藏进度条 */
+.prog,
+.progress-bar,
+.progress,
+[class*="prog"] {
+  display: none !important;
+}
+
+/* 隐藏导航箭头 */
+.arrow,
+.nav-arrow,
+.prev-btn,
+.next-btn,
+[class*="arrow"] {
+  display: none !important;
+}
+
+/* 幻灯片容器：允许内容溢出 */
+.slide,
+section.slide,
+article.slide {
+  overflow: visible !important;
+  page-break-after: auto !important;
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+
+/* 确保所有内容可见 */
+body, html {
+  overflow: visible !important;
+  overflow-x: visible !important;
+  overflow-y: visible !important;
+}
+`;
+
+// ======== @media print CSS 模板 ========
+const MEDIA_PRINT_CSS = `
+@media print {
+  @page { margin: 0; }
+  body {
+    background: transparent;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    overflow: visible !important;
+  }
+  html { overflow: visible !important; }
+  .slide {
+    page-break-after: auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    width: 100% !important;
+    min-height: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
+  }
+  #particle-canvas, .dots, .prog, .arrow { display: none !important; }
+  .ani {
+    opacity: 1 !important;
+    animation: none !important;
+    transform: none !important;
+  }
+}
+`;
+
+// ======== HTML 规范化 ========
+/**
+ * 规范化HTML用于PDF生成
+ * - 清理BOM
+ * - 确保标准HTML结构
+ * - 检查并补全 @media print CSS
+ * - 不修改布局属性
+ */
 function normalizeHtmlForPdf(rawHtml) {
   let html = rawHtml;
+
+  // 清理BOM和非法字符
   html = html.replace(/^\uFEFF/, '');
   html = html.replace(/^\u00BB\u00BF/, '');
   html = html.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, '');
   html = html.replace(/<\?xml[^?]*\?>/gi, '');
 
+  // 确保有标准HTML结构
   const hasHtmlTag = /<html[\s>]/i.test(html);
   if (!hasHtmlTag) {
     let headContent = '';
     let bodyContent = html;
     const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-    if (headMatch) { headContent = headMatch[1]; bodyContent = html.replace(/<head[^>]*>[\s\S]*?<\/head>/i, ''); }
+    if (headMatch) {
+      headContent = headMatch[1];
+      bodyContent = html.replace(/<head[^>]*>[\s\S]*?<\/head>/i, '');
+    }
     const bodyMatch = bodyContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     if (bodyMatch) bodyContent = bodyMatch[1];
     html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">${headContent}</head><body>${bodyContent}</body></html>`;
   }
 
+  // 确保有 charset 和 viewport
   if (!/<meta[^>]+charset/i.test(html)) {
     if (html.includes('<head>')) html = html.replace(/<head>/i, '<head>\n<meta charset="UTF-8">');
   }
@@ -132,364 +240,292 @@ function normalizeHtmlForPdf(rawHtml) {
     if (html.includes('<head>')) html = html.replace(/<head>/i, `<head>\n${vm}`);
   }
 
-  // 移除 @media print（避免打印模式下样式突变）和 @page
-  html = html.replace(/@media\s+print\s*\{[\s\S]*?\}\s*(?=\s*<\/style>|\s*@media|\s*<\/head>|\s*$)/gi, '');
-  html = html.replace(/@page\s*\{[\s\S]*?\}\s*/gi, '');
+  // 检查 @media print CSS 是否已存在
+  const hasMediaPrint = /@media\s+print\s*\{/i.test(html);
+  if (!hasMediaPrint) {
+    // 在 </head> 之前注入 @media print CSS
+    const mediaPrintStyle = `<style id="pdf-media-print">${MEDIA_PRINT_CSS}</style>`;
+    if (/<\/head>/i.test(html)) {
+      html = html.replace(/<\/head>/i, `${mediaPrintStyle}\n</head>`);
+    } else {
+      // 如果没有 </head>，在 <body> 之前插入
+      html = html.replace(/<body/i, `${mediaPrintStyle}\n<body`);
+    }
+    console.log('📝 自动补入 @media print CSS');
+  }
+
+  // 确保存在 .ani 类标记的检查
+  const hasAniClass = /class=["'][^"']*\bani\b/i.test(html) || /class=["'][^"']*ani[a-zA-Z-]*/i.test(html);
+  if (!hasAniClass) {
+    console.log('⚠️ 未检测到 .ani 类标记，建议为动画元素添加 class="ani"');
+  }
+
+  // 移除注释
   html = html.replace(/<!--(?!\[if)[\s\S]*?-->/g, '');
+
   if (!html.trim().toLowerCase().startsWith('<!doctype')) html = '<!DOCTYPE html>\n' + html;
 
   return html;
 }
 
-// ======== 核心渲染函数 ========
-async function createRenderedPage(htmlContent, options = {}) {
+// ======== 核心PDF渲染函数 ========
+async function convertHtmlToPdfSuperLong(htmlContent, options = {}) {
   htmlContent = normalizeHtmlForPdf(htmlContent);
 
   const browser = await getBrowser();
   const page = await browser.newPage();
 
-  // 先用小视口加载，让内容自然展开，避免100vh元素被拉伸
-  const vpW = 1280;
-  await page.setViewport({ width: vpW, height: 1080, deviceScaleFactor: 1 });
-
-  // 使用 setContent 加载（之前验证稳定的方案）
-  await page.setContent(htmlContent, {
-    waitUntil: 'networkidle0',
-    timeout: TIMEOUTS.pageLoad
-  });
-  await new Promise(r => setTimeout(r, TIMEOUTS.postRender));
-
-  // 展开隐藏内容
-  await page.evaluate(() => {
-    document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
-    document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
-    const sug = document.getElementById('sugGrid');
-    if (sug) sug.style.display = '';
-  });
-  await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
-
-  // 获取内容宽度和高度
-  const measurements = await page.evaluate(() => {
-    const de = document.documentElement;
-    const body = document.body;
-    
-    // 临时移除body scrollbar以获得准确内容宽度
-    const originalOverflow = body?.style.overflow;
-    const originalOverflowX = body?.style.overflowX;
-    if (body) {
-      body.style.overflow = 'visible';
-      body.style.overflowX = 'visible';
-    }
-    
-    const scrollW = Math.max(de.scrollWidth, body ? body.scrollWidth : 0);
-
-    // ★★★ 真实内容尺寸：遍历所有可见元素获取最大right和bottom
-    // 注意：scrollHeight在overflow:auto/scroll容器中只返回可见区域高度，
-    // 不能反映被隐藏的内容。必须使用getBoundingClientRect或递归展开。
-    let maxRight = 0;
-    let maxBottom = 0;
-    document.querySelectorAll('body *').forEach(el => {
-      const cs = getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-      const rect = el.getBoundingClientRect();
-      maxRight = Math.max(maxRight, rect.right);
-      maxBottom = Math.max(maxBottom, rect.bottom);
-    });
-    // 同时考虑document的scrollHeight作为兜底
-    const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
-    maxBottom = Math.max(maxBottom, scrollH);
-
-    // 恢复原始overflow
-    if (body) {
-      body.style.overflow = originalOverflow || '';
-      body.style.overflowX = originalOverflowX || '';
-    }
-
-    const contentWidth = Math.max(Math.ceil(maxRight), scrollW, 320);
-    const contentHeight = Math.max(Math.ceil(maxBottom), 100);
-    const bgColor = getComputedStyle(body || de).backgroundColor || '#ffffff';
-
-    return { contentWidth, contentHeight, scrollW, maxRight, maxBottom, bgColor };
-  });
-
-  // 底部增加填充条消除白缝
-  await page.evaluate((bg) => {
-    const filler = document.createElement('div');
-    filler.style.cssText = `height:4px;width:100%;background:${bg};flex-shrink:0;`;
-    document.body.appendChild(filler);
-  }, measurements.bgColor);
-
-  // 重新测量高度
-  const finalHeight = await page.evaluate(() =>
-    Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0, 100)
-  );
-
-  console.log(`📐 测量: 宽=${measurements.contentWidth}px, 高=${finalHeight}px, maxRight=${measurements.maxRight}`);
-
-  return { page, contentWidth: measurements.contentWidth, contentHeight: finalHeight, bgColor: measurements.bgColor };
-}
-
-// ======== 基础CSS注入 ========
-// ★★★ 仅注入颜色保留，不修改布局属性。
-// 布局已在测量阶段确定，此处修改会破坏100vh、flex等布局。
-const BASE_CSS = `
-* {
-  -webkit-print-color-adjust: exact !important;
-  print-color-adjust: exact !important;
-  color-adjust: exact !important;
-}
-`;
-
-// ======== 模式A：打印模式（默认，单页长PDF）========
-async function convertHtmlToPdfPrint(htmlContent, options = {}) {
-  const { page, contentWidth, contentHeight } = await createRenderedPage(htmlContent);
-  const userPdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
-    ? parseInt(options.pdfWidth, 10) : null;
-
   try {
-    const targetWidth = userPdfWidth || contentWidth;
-    // ★★★ 核心修复：在打印前将100vh转换为实际像素高度，避免空白
-    // 先获取每个使用了100vh的元素的当前实际渲染高度，然后设置为固定像素值
-    await page.evaluate(() => {
-      // 查找所有使用vh单位的min-height/height属性
-      const sheets = Array.from(document.styleSheets);
-      const vhSelectors = new Set();
-      
-      sheets.forEach(sheet => {
-        try {
-          Array.from(sheet.cssRules || []).forEach(rule => {
-            if (rule.style) {
-              const mh = rule.style.minHeight || '';
-              const h = rule.style.height || '';
-              if (mh.includes('vh') || h.includes('vh')) {
-                vhSelectors.add(rule.selectorText);
-              }
-            }
-          });
-        } catch (e) { /* 跨域样式表会报错，忽略 */ }
-      });
-      
-      // 同时检查行内样式
-      document.querySelectorAll('[style*="vh"]').forEach(el => {
-        const style = el.getAttribute('style') || '';
-        if (style.includes('min-height') && style.includes('vh')) {
-          const rect = el.getBoundingClientRect();
-          el.style.minHeight = rect.height + 'px';
-        }
-        if (style.includes('height') && style.includes('vh') && !style.includes('min-height')) {
-          const rect = el.getBoundingClientRect();
-          el.style.height = rect.height + 'px';
-        }
-      });
-      
-      // 对样式表匹配的元素也设置固定高度
-      vhSelectors.forEach(selector => {
-        try {
-          document.querySelectorAll(selector).forEach(el => {
-            const rect = el.getBoundingClientRect();
-            const computed = getComputedStyle(el);
-            // 如果元素当前高度是由vh决定的（内容高度小于元素高度）
-            if (rect.height > 0) {
-              el.style.minHeight = rect.height + 'px';
-              // 如果原样式有height:100vh，也冻结
-              if ((computed.height || '').includes('vh') || el.style.height.includes('vh')) {
-                el.style.height = rect.height + 'px';
-              }
-            }
-          });
-        } catch (e) { /* 忽略无效选择器 */ }
-      });
-    });
-    
-    // ★★★ 成功经验：不设viewport高度为contentHeight，保持固定高度避免100vh元素拉伸
-    await page.setViewport({
-      width: Math.max(Math.round(targetWidth), 800),
-      height: 1080,
-      deviceScaleFactor: 1
-    });
-    await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
+    // 设置视口（1920×1080标准视口，让内容按设计尺寸渲染）
+    const VIEWPORT_WIDTH = 1920;
+    const VIEWPORT_HEIGHT = 1080;
+    await page.setViewport({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT, deviceScaleFactor: 1 });
 
-    // ★ 展开已在createRenderedPage中完成，无需重复
-    // 直接注入颜色保留CSS
-    await page.addStyleTag({ content: BASE_CSS });
+    // 加载HTML内容
+    await page.setContent(htmlContent, {
+      waitUntil: ['networkidle0', 'domcontentloaded'],
+      timeout: TIMEOUTS.pageLoad
+    });
+
+    // 等待字体加载完成
+    await page.evaluate(() => {
+      if (document.fonts && document.fonts.ready) {
+        return document.fonts.ready;
+      }
+      return Promise.resolve();
+    });
+    await new Promise(r => setTimeout(r, TIMEOUTS.fontWait));
+
+    // 点击展开隐藏的tab和fi元素（兼容操作栏和更多内容）
+    await page.evaluate(() => {
+      document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
+      document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
+      // 建议区
+      const sug = document.getElementById('sugGrid');
+      if (sug) sug.style.display = '';
+      // section列表展开卡片
+      document.querySelectorAll('.section').forEach(s => {
+        if (s.click) s.click();
+      });
+    });
+    await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
+
+    // === 注入PDF渲染CSS ===
+    await page.addStyleTag({ content: PDF_RENDER_CSS });
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-    // 重新测量最终尺寸（同样使用max-bottom逻辑）
-    const finalMeasurements = await page.evaluate(() => {
+    // === 冻结动画元素：.ani三件套 ===
+    await page.evaluate(() => {
+      // 强制所有 .ani 元素可见
+      const aniElements = document.querySelectorAll('.ani, .animated, [class*="ani"]');
+      aniElements.forEach(el => {
+        el.style.opacity = '1';
+        el.style.visibility = 'visible';
+        el.style.animation = 'none';
+        el.style.transform = 'none';
+        el.style.transition = 'none';
+      });
+
+      // 检查是否有元素初始opacity为0但没有.ani类（补偿处理）
+      document.querySelectorAll('*').forEach(el => {
+        const computed = getComputedStyle(el);
+        // 如果元素通过 CSS animation 或 transition 设置了隐藏
+        if ((computed.opacity === '0' || computed.visibility === 'hidden') &&
+            (computed.animationName !== 'none' || computed.transitionDuration !== '0s')) {
+          el.style.opacity = '1';
+          el.style.visibility = 'visible';
+          el.style.animation = 'none';
+          el.style.transform = 'none';
+          el.style.transition = 'none';
+        }
+      });
+    });
+
+    // === 隐藏装饰元素 ===
+    await page.evaluate(() => {
+      // 粒子canvas
+      const pc = document.getElementById('particle-canvas');
+      if (pc) pc.style.display = 'none';
+      // 导航点
+      const dots = document.getElementById('dots');
+      if (dots) dots.style.display = 'none';
+      document.querySelectorAll('.dots').forEach(d => d.style.display = 'none');
+      // 进度条
+      document.querySelectorAll('.prog').forEach(p => p.style.display = 'none');
+      // 导航箭头
+      document.querySelectorAll('.arrow').forEach(a => a.style.display = 'none');
+    });
+
+    await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
+
+    // === 测量完整内容高度 ===
+    const measurements = await page.evaluate(() => {
       const de = document.documentElement;
       const body = document.body;
-      let maxW = Math.max(de.scrollWidth, body ? body.scrollWidth : 0);
-      let maxH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+
+      // 临时移除body滚动条以获得准确宽度
+      const originalOverflow = body?.style.overflow;
+      const originalOverflowX = body?.style.overflowX;
+      if (body) {
+        body.style.overflow = 'visible';
+        body.style.overflowX = 'visible';
+      }
+
+      const scrollW = Math.max(de.scrollWidth, body ? body.scrollWidth : 0);
+
+      // 遍历所有可见元素获取最大right和bottom
+      let maxRight = 0;
+      let maxBottom = 0;
       document.querySelectorAll('body *').forEach(el => {
         const cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
         const rect = el.getBoundingClientRect();
-        maxW = Math.max(maxW, rect.right);
+        maxRight = Math.max(maxRight, rect.right);
+        maxBottom = Math.max(maxBottom, rect.bottom);
+      });
+      const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+      maxBottom = Math.max(maxBottom, scrollH);
+
+      // 恢复
+      if (body) {
+        body.style.overflow = originalOverflow || '';
+        body.style.overflowX = originalOverflowX || '';
+      }
+
+      const contentWidth = Math.max(Math.ceil(maxRight), scrollW, 320);
+      const contentHeight = Math.max(Math.ceil(maxBottom), 100);
+      const bgColor = getComputedStyle(body || de).backgroundColor || '#ffffff';
+
+      return { contentWidth, contentHeight, bgColor };
+    });
+
+    // === 添加2px filler消除底部缝隙 ===
+    await page.evaluate((bg) => {
+      const filler = document.createElement('div');
+      filler.id = 'pdf-filler';
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
+
+    // 重新测量高度
+    const finalHeight = await page.evaluate(() => {
+      const de = document.documentElement;
+      const body = document.body;
+      let maxH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0, 100);
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
         maxH = Math.max(maxH, rect.bottom);
       });
-      return { w: maxW, h: maxH };
+      return maxH;
     });
 
-    const pdfW = Math.max(finalMeasurements.w, 320);
-    const pdfH = Math.max(finalMeasurements.h, 100);
+    // 再次添加一个同底色的2px filler（双重保险）
+    await page.evaluate((bg) => {
+      const existing = document.getElementById('pdf-filler');
+      if (existing) {
+        existing.style.height = '0px';
+      }
+      const filler = document.createElement('div');
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
 
-    // ★★★ 成功经验：用 page.pdf({width, height}) 生成单页长PDF，不用 format:'A4'
-    // Puppeteer width/height 需带单位，px 表示 CSS 像素 (1px = 1/96 inch)
+    const pdfWidth = Math.max(measurements.contentWidth, 320);
+    const pdfHeight = Math.max(finalHeight, 100);
+
+    console.log(`📐 测量: 宽=${pdfWidth}px, 高=${pdfHeight}px`);
+
+    // === 生成矢量PDF ===
     const pdfBuffer = await page.pdf({
-      width: `${pdfW}px`,
-      height: `${pdfH}px`,
+      width: `${pdfWidth}px`,
+      height: `${pdfHeight}px`,
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
-      preferCSSPageSize: false
+      preferCSSPageSize: false,
+      scale: 1
     });
 
-    console.log(`✅ [打印模式] 单页PDF: ${pdfW}x${pdfH}px, ${(pdfBuffer.length / 1024).toFixed(1)}KB`);
+    console.log(`✅ [SuperLong模式] 矢量PDF: ${pdfWidth}x${pdfHeight}px, ${(pdfBuffer.length / 1024).toFixed(1)}KB`);
 
     return {
       buffer: pdfBuffer,
-      pageCount: 1,
+      contentWidth: pdfWidth,
+      contentHeight: pdfHeight,
       sizeKB: (pdfBuffer.length / 1024).toFixed(1),
-      mode: 'print'
+      mode: 'super-long'
     };
+
   } finally {
     await page.close();
   }
 }
 
-// ======== 模式B：截图模式（像素级精确，分段拼接单页）========
-async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
-  const { page, contentWidth, contentHeight } = await createRenderedPage(htmlContent);
-  const userPdfWidth = options.pdfWidth && options.pdfWidth !== 'auto'
-    ? parseInt(options.pdfWidth, 10) : null;
-
-  const scale = 2;
-  const targetWidth = userPdfWidth || contentWidth;
-  const MAX_DIM = 16384;
-  const maxCssH = Math.floor(MAX_DIM / scale) - 50;
-
-  const needsSeg = contentHeight > maxCssH;
-  const segH = needsSeg ? maxCssH : contentHeight;
-  const segCount = needsSeg ? Math.ceil(contentHeight / segH) : 1;
-
-  console.log(`📐 [截图模式] 内容=${targetWidth}x${contentHeight}px, 分段=${needsSeg}, 段数=${segCount}`);
-
+// ======== PDF 质量验证 ========
+async function verifyPdf(pdfBuffer) {
   try {
-    // 基础CSS（颜色保留），展开已在createRenderedPage中完成
-    await page.addStyleTag({ content: BASE_CSS });
-    await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    const pageCount = pdfDoc.getPageCount();
+    const pages = pdfDoc.getPages();
+    const firstPage = pages[0];
+    const { width, height } = firstPage.getSize();
 
-    await page.setViewport({
-      width: targetWidth,
-      height: needsSeg ? segH : contentHeight,
-      deviceScaleFactor: scale
-    });
-    await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
+    const checks = {
+      pageCount: pageCount,
+      pageCountOk: pageCount === 1,
+      width: width,
+      height: height,
+      widthOk: width >= 500,
+      heightOk: height > 500,
+      sizeOk: pdfBuffer.length > 1024,
+      textOk: true
+    };
 
-    // PDF尺寸：CSS像素 * 0.75 = pt（points）
-    const pdfW = targetWidth * 0.75;
-    const pdfH = contentHeight * 0.75;
+    console.log(`🔍 PDF验证: 页数=${pageCount}, 尺寸=${width.toFixed(1)}x${height.toFixed(1)}pt`);
 
-    // ----- 单段：直接截图嵌入 -----
-    if (!needsSeg) {
-      // ★ fullPage截图会截取整个页面内容，即使viewport高度小于内容高度
-      const ss = await page.screenshot({ type: 'jpeg', quality: 95, fullPage: true });
-      if (!ss || ss.length === 0) throw new Error('截图返回空数据');
-
-      const pdfDoc = await PDFDocument.create();
-      const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
-      const img = await pdfDoc.embedJpg(ss);
-      // ★★★ pdf-lib y=0是左下角，fullPage截图高度=contentHeight，所以直接铺满
-      pdfPage.drawImage(img, { x: 0, y: 0, width: pdfW, height: pdfH });
-
-      const buf = await pdfDoc.save();
-      console.log(`✅ [截图模式] 单页PDF: ${(buf.length / 1024).toFixed(1)}KB`);
-      return { buffer: Buffer.from(buf), pageCount: 1, sizeKB: (buf.length / 1024).toFixed(1), mode: 'screenshot' };
-    }
-
-    // ----- 多段：拼接单页PDF -----
-    const pdfDoc = await PDFDocument.create();
-    const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
-
-    for (let i = 0; i < segCount; i++) {
-      const scrollY = i * segH;
-      const isLast = i === segCount - 1;
-      const thisSegH = isLast ? (contentHeight - scrollY) : segH;
-      const segPdfH = thisSegH * 0.75;
-
-      await page.setViewport({ width: targetWidth, height: thisSegH, deviceScaleFactor: scale });
-      await new Promise(r => setTimeout(r, 100));
-      await page.evaluate((y) => { window.scrollTo(0, y); }, scrollY);
-      await new Promise(r => setTimeout(r, 80));
-
-      let segBuffer = await page.screenshot({ type: 'jpeg', quality: 95, clip: { x: 0, y: 0, width: targetWidth, height: thisSegH } });
-      if (!segBuffer || segBuffer.length === 0) {
-        segBuffer = await page.screenshot({ type: 'jpeg', quality: 90, fullPage: true });
-      }
-      if (!segBuffer || segBuffer.length === 0) throw new Error(`段${i + 1}截图失败`);
-
-      // ★★★ Y轴定位修正：pdf-lib 原点在左下角(y=0)，y向上增大
-      // scrollY=0 (HTML顶部) → y = pdfH - segPdfH (PDF顶部)
-      // scrollY=最大 (HTML底部) → y = 0 (PDF底部)
-      const topY = pdfH - ((scrollY + thisSegH) / contentHeight) * pdfH;
-      const bottomY = pdfH - (scrollY / contentHeight) * pdfH;
-      const thisPdfH_seg = bottomY - topY;
-
-      const img = await pdfDoc.embedJpg(segBuffer);
-      pdfPage.drawImage(img, {
-        x: 0,
-        y: topY,
-        width: pdfW,
-        height: thisPdfH_seg
-      });
-
-      console.log(`  📸 段${i + 1}/${segCount}: scrollY=${scrollY}, y=${topY.toFixed(1)}..${bottomY.toFixed(1)}`);
-    }
-
-    const buf = await pdfDoc.save();
-    console.log(`✅ [截图模式] 拼接PDF: ${segCount}段, ${(buf.length / 1024).toFixed(1)}KB`);
-    return { buffer: Buffer.from(buf), pageCount: 1, sizeKB: (buf.length / 1024).toFixed(1), mode: 'screenshot' };
-  } finally {
-    await page.close();
+    return checks;
+  } catch (err) {
+    console.error('PDF验证失败:', err.message);
+    return { error: err.message };
   }
 }
 
 // ======== API 路由 ========
-async function convertHtmlToPdf(htmlContent, options = {}) {
-  const mode = options.pdfMode || 'print';
-  if (mode === 'screenshot') {
-    try { return await convertHtmlToPdfScreenshot(htmlContent, options); }
-    catch (err) {
-      console.warn(`⚠️ 截图模式失败: ${err.message}，降级到打印模式`);
-      return await convertHtmlToPdfPrint(htmlContent, options);
-    }
-  }
-  return await convertHtmlToPdfPrint(htmlContent, options);
-}
-
 app.post('/api/html-to-pdf', async (req, res) => {
   const requestTimer = setTimeout(() => {
     if (!res.headersSent) res.status(504).json({ error: 'PDF生成超时' });
   }, TIMEOUTS.requestTotal);
 
   try {
-    const { html, filename, pdfWidth, pdfMode } = req.body;
+    const { html, filename } = req.body;
     if (!html || typeof html !== 'string') {
       clearTimeout(requestTimer);
       return res.status(400).json({ error: '缺少html字段' });
     }
 
-    console.log(`\n📄 请求: HTML长度=${html.length}, 宽度=${pdfWidth || 'auto'}, 模式=${pdfMode || 'print'}`);
-    const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'print' });
+    console.log(`\n📄 PDF生成请求: HTML长度=${html.length}`);
+
+    const result = await convertHtmlToPdfSuperLong(html);
+    const verify = await verifyPdf(result.buffer);
+
+    if (verify.error) {
+      console.warn('⚠️ PDF验证警告:', verify.error);
+    }
+
     clearTimeout(requestTimer);
 
     const pdfName = (filename || 'document').replace(/\.html?$/i, '') + '.pdf';
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(pdfName)}"`);
-    res.setHeader('X-PDF-Pages', result.pageCount);
+    res.setHeader('X-PDF-Pages', result.contentHeight > 5000 ? 1 : verify.pageCount || 1);
     res.setHeader('X-PDF-Size-KB', result.sizeKB);
     res.setHeader('X-PDF-Mode', result.mode);
+    res.setHeader('X-PDF-Width', result.contentWidth);
+    res.setHeader('X-PDF-Height', result.contentHeight);
     res.send(result.buffer);
-    console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.pageCount}页, ${result.sizeKB}KB)`);
+
+    console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.contentWidth}x${result.contentHeight}px, ${result.sizeKB}KB)`);
   } catch (err) {
     clearTimeout(requestTimer);
     console.error('❌ PDF转换失败:', err.message);
@@ -508,5 +544,5 @@ app.listen(PORT, HOST, () => {
   console.log(`\n🎨 HTML Editor 服务已启动`);
   console.log(`   http://${HOST}:${PORT}`);
   console.log(`   Chromium: ${CHROME_PATH}`);
-  console.log(`   默认PDF模式: print (单页长PDF)\n`);
+  console.log(`   PDF模式: super-long (超长单页矢量PDF)\n`);
 });

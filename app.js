@@ -1114,7 +1114,134 @@ ${bodyContent}
     showToast(`已导出 ${currentFileName}`, 'success');
   }
 
-  /* ── 导出 PDF ── */
+  /* ═══════════════════════════════════════════════════════════════
+     导出 PDF — 基于 html-to-pdf-convertor-SKILL.md 规范的工作流
+     步骤：
+       1. 检查HTML结构规范
+       2. 自动修复不满足规范的部分
+       3. 传递给后端生成矢量PDF
+  ═══════════════════════════════════════════════════════════════ */
+
+  /**
+   * 检查并修复HTML结构，使其符合PDF生成规范
+   */
+  function checkAndFixHtmlForPdf(html) {
+    let fixed = html;
+    const issues = [];
+    const fixes = [];
+
+    // === 检查1: 确保标准HTML结构 ===
+    if (!/<!DOCTYPE\s+html/i.test(fixed)) {
+      fixed = '<!DOCTYPE html>\n' + fixed;
+      fixes.push('添加 <!DOCTYPE html>');
+    }
+    if (!/<html[\s>]/i.test(fixed)) {
+      fixed = '<html lang="zh-CN">' + fixed + '</html>';
+      fixes.push('添加 <html> 标签');
+    }
+    if (!/<head[\s>]/i.test(fixed)) {
+      fixed = fixed.replace(/<html[^>]*>/i, (m) => m + '<head><meta charset="UTF-8"></head>');
+      fixes.push('添加 <head> 和 charset');
+    }
+    if (!/<meta[^>]+charset/i.test(fixed)) {
+      fixed = fixed.replace(/<head[^>]*>/i, (m) => m + '\n<meta charset="UTF-8">');
+      fixes.push('添加 charset meta');
+    }
+    if (!/<body[\s>]/i.test(fixed)) {
+      // 提取样式到head，其余放body
+      const styleMatch = fixed.match(/<style[\s\S]*?<\/style>/gi);
+      let bodyContent = fixed;
+      if (styleMatch) {
+        const styles = styleMatch.join('\n');
+        bodyContent = fixed.replace(/<style[\s\S]*?<\/style>/gi, '');
+        fixed = fixed.replace(/<\/head>/i, styles + '\n</head>');
+      }
+      fixed = fixed.replace(/(<\/head>[\s\S]*?)(<\/html>|$)/i, '$1<body>' + bodyContent + '</body>');
+      fixes.push('添加 <body> 标签');
+    }
+
+    // === 检查2: @media print CSS ===
+    const hasMediaPrint = /@media\s+print\s*\{/i.test(fixed);
+    if (!hasMediaPrint) {
+      const mediaPrintCss = `
+@media print {
+  @page { margin: 0; }
+  body {
+    background: transparent;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    overflow: visible !important;
+  }
+  html { overflow: visible !important; }
+  .slide {
+    page-break-after: auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    width: 100% !important;
+    min-height: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
+  }
+  #particle-canvas, .dots, .prog, .arrow { display: none !important; }
+  .ani {
+    opacity: 1 !important;
+    animation: none !important;
+    transform: none !important;
+  }
+}`;
+      if (/<\/style>/i.test(fixed)) {
+        // 在 </style> 标签组之后插入
+        const lastStyleIndex = fixed.lastIndexOf('</style>');
+        if (lastStyleIndex > -1) {
+          fixed = fixed.slice(0, lastStyleIndex + 8) + '\n<style id="pdf-media-print">' + mediaPrintCss + '</style>' + fixed.slice(lastStyleIndex + 8);
+        }
+      } else if (/<\/head>/i.test(fixed)) {
+        fixed = fixed.replace(/<\/head>/i, '<style id="pdf-media-print">' + mediaPrintCss + '</style>\n</head>');
+      } else {
+        fixed = '<style id="pdf-media-print">' + mediaPrintCss + '</style>\n' + fixed;
+      }
+      fixes.push('补入 @media print CSS');
+    }
+
+    // === 检查3: slide结构 ===
+    const hasSlideClass = /class=["'][^"']*slide/i.test(fixed) || /<section[\s\S]*?class=["'].*slide/i.test(fixed);
+    if (!hasSlideClass) {
+      issues.push('未检测到 .slide 类，建议用 <section class="slide"> 包裹每页内容');
+    }
+
+    // === 检查4: .ani类标记 ===
+    const hasAniClass = /class=["'][^"']*\bani\b/i.test(fixed);
+    if (!hasAniClass) {
+      issues.push('未检测到 .ani 类标记，动画元素可能不可见');
+    }
+
+    // === 检查5: 粒子canvas id ===
+    const hasParticleCanvas = /id=["']particle-canvas["']/i.test(fixed);
+    if (!hasParticleCanvas) {
+      issues.push('未检测到 id="particle-canvas" 的canvas元素');
+    }
+
+    // === 自动包裹非结构化内容（如果内容之间没有section包装）===
+    // 如果内容直接放在body里且没有.slide包裹，自动添加
+    const bodyMatch = fixed.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (bodyMatch) {
+      const bodyContent = bodyMatch[1];
+      const hasDirectSections = /<(section|div)[^>]*class=["'][^"']*slide/i.test(bodyContent);
+      if (!hasDirectSections && !hasSlideClass) {
+        // 内容没有正确包裹，自动包装为一个slide
+        const trimmedContent = bodyContent.trim();
+        if (trimmedContent && trimmedContent.length > 50) {
+          const newBodyContent = '<section class="slide">\n' + trimmedContent + '\n</section>';
+          fixed = fixed.replace(/(<body[^>]*>)([\s\S]*?)(<\/body>)/i, '$1' + newBodyContent + '$3');
+          fixes.push('自动用 <section class="slide"> 包裹内容');
+        }
+      }
+    }
+
+    return { fixedHtml: fixed, issues, fixes };
+  }
+
   async function downloadPdf() {
     syncFromFrame();
     if (!currentHtml || currentHtml.trim() === '') {
@@ -1128,30 +1255,43 @@ ${bodyContent}
     btn.innerHTML = '<span class="spinner"></span> 生成中…';
 
     try {
-      // ★ 直接传递原始HTML，后端会自动规范化并注入渲染CSS
-      // 后端server.js中的normalizeHtmlForPdf和BASE_CSS已处理所有PDF优化
-      // 前端只需做最小清理：移除编辑器注入的交互样式
+      // === Step 1-2: 检查并修复HTML结构 ===
+      console.log('[PDF] 开始HTML规范检查...');
       let fullHtml = currentHtml;
 
       // 移除编辑器注入的交互样式（避免选中框/悬停效果出现在PDF中）
       fullHtml = fullHtml.replace(/<style id="html-editor-injected">[\s\S]*?<\/style>/gi, '');
-      // 移除编辑器注入的class和属性
       fullHtml = fullHtml.replace(/\s*class="html-editor-selected"/gi, '');
       fullHtml = fullHtml.replace(/\s*class="html-editor-hover"/gi, '');
       fullHtml = fullHtml.replace(/\s*class="html-editor-dragging"/gi, '');
       fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
       fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
 
-      // 移除可能由前端之前版本注入的pdf-render-override样式，避免重复
-      fullHtml = fullHtml.replace(/<style id="pdf-render-override">[\s\S]*?<\/style>/gi, '');
+      // 执行规范检查与自动修复
+      const { fixedHtml, issues, fixes } = checkAndFixHtmlForPdf(fullHtml);
+      fullHtml = fixedHtml;
 
-      // 使用打印模式（默认，速度快、文字可选、稳定性高）
-      const pdfMode = 'print';
-      const pdfWidth = 'auto';
+      if (fixes.length > 0) {
+        console.log('[PDF] 自动修复:', fixes.join(', '));
+      }
+      if (issues.length > 0) {
+        console.log('[PDF] 检查提示:', issues.join('; '));
+      }
 
-      // 带超时的 fetch 请求
+      // 如果进行了修复，更新编辑器的HTML
+      if (fixes.length > 0) {
+        currentHtml = fixedHtml;
+        // 异步刷新预览（不阻塞PDF生成）
+        setTimeout(() => {
+          renderPreview();
+          buildElementTree();
+          updateCodePanel();
+        }, 0);
+      }
+
+      // === Step 3-5: 后端生成PDF ===
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时（服务端25秒会先返回504）
+      const timeoutId = setTimeout(() => controller.abort(), 55000); // 55秒超时
 
       let response;
       try {
@@ -1160,16 +1300,14 @@ ${bodyContent}
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             html: fullHtml,
-            filename: currentFileName,
-            pdfWidth: pdfWidth,
-            pdfMode: pdfMode
+            filename: currentFileName
           }),
           signal: controller.signal
         });
       } catch (fetchErr) {
         clearTimeout(timeoutId);
         if (fetchErr.name === 'AbortError') {
-          throw new Error('PDF 生成超时（30秒），内容可能过大。建议：①减少内容长度 ②使用浏览器"打印→另存为PDF"');
+          throw new Error('PDF 生成超时，内容可能过大');
         }
         throw new Error('无法连接 PDF 服务，请确认后端服务已启动 (node server.js)');
       }
@@ -1180,19 +1318,16 @@ ${bodyContent}
         try {
           const errData = await response.json();
           errMsg = errData.error || errMsg;
-        } catch (_) {
-          // 非 JSON 响应，使用默认错误消息
-        }
+        } catch (_) {}
         throw new Error(errMsg);
       }
 
       const blob = await response.blob();
-
-      // 验证返回的是 PDF 而非错误
       if (blob.size < 100 || blob.type === 'application/json') {
         throw new Error('PDF 生成结果异常，文件过小或格式错误');
       }
 
+      // === Step 6: 下载 ===
       const pdfName = currentFileName.replace(/\.html?$/i, '') + '.pdf';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1201,33 +1336,14 @@ ${bodyContent}
       a.click();
       URL.revokeObjectURL(url);
 
-      const pages = response.headers.get('X-PDF-Pages') || '?';
+      const pdfWidth = response.headers.get('X-PDF-Width') || '?';
+      const pdfHeight = response.headers.get('X-PDF-Height') || '?';
       const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
-      const mode = response.headers.get('X-PDF-Mode') === 'screenshot' ? '截图' : '打印';
-      showToast(`✅ PDF 已导出: ${pdfName} (${pages}页, ${sizeKB}KB)`, 'success');
+      showToast(`✅ PDF 已导出: ${pdfWidth}×${pdfHeight}px, ${sizeKB}KB`, 'success');
+
     } catch (err) {
       console.error('PDF 导出失败:', err);
-      // 降级方案：使用浏览器打印功能保存为 PDF
-      const useFallback = confirm(
-        `⚠️ 服务端 PDF 生成失败：${err.message}\n\n` +
-        `建议使用浏览器「打印→另存为 PDF」方式导出\n` +
-        `（在打印对话框中选择"另存为PDF"即可）\n\n` +
-        `是否现在尝试？`
-      );
-      if (useFallback) {
-        // 在新窗口打开纯净版 HTML，然后调用 print()
-        const printWin = window.open('', '_blank');
-        if (printWin) {
-          printWin.document.write(currentHtml);
-          printWin.document.close();
-          printWin.onload = () => {
-            setTimeout(() => printWin.print(), 500);
-          };
-          showToast('已在新窗口打开，请在打印对话框中选择"另存为PDF"', 'info');
-        } else {
-          showToast('弹出窗口被拦截，请允许弹出窗口后重试', 'error');
-        }
-      }
+      showToast(`PDF 导出失败: ${err.message}`, 'error');
     } finally {
       btn.disabled = false;
       btn.innerHTML = originalHTML;
