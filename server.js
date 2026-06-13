@@ -389,12 +389,13 @@ async function createRenderedPage(htmlContent, options = {}) {
   });
   await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
 
-  // Step2: ★ 宽度检测（如果需要）
+  // Step2: ★ 宽度检测（仅用于PDF页面尺寸，不再改变viewport）
+  // ⚠️ 注意：不可在此改变viewport！否则scale=2时page.screenshot()可能返回0字节(Chromium bug)
   let pdfWidth = DEFAULT_VIEWPORT.width;
   if (userPdfWidth) {
     pdfWidth = userPdfWidth;
   } else {
-    const detectedWidth = await page.evaluate(() => {
+    const detected = await page.evaluate(() => {
       let maxRight = 0;
       document.querySelectorAll('body *').forEach(el => {
         const cs = getComputedStyle(el);
@@ -412,16 +413,15 @@ async function createRenderedPage(htmlContent, options = {}) {
       let viewportWidth = 0;
       const vm = document.querySelector('meta[name="viewport"]');
       if (vm) { const c = vm.getAttribute('content') || ''; const m = c.match(/width\s*=\s*(\d+)/); if (m) viewportWidth = parseInt(m[1], 10); }
-      if (contentMaxWidth > 300 && contentMaxWidth <= 500) return Math.ceil(contentMaxWidth);
-      if (viewportWidth > 300 && viewportWidth <= 500) return Math.ceil(viewportWidth);
-      return Math.max(Math.ceil(maxRight), document.body?.scrollWidth || 0, document.documentElement?.scrollWidth || 0, 320);
+      let finalW;
+      if (contentMaxWidth > 300 && contentMaxWidth <= 500) finalW = Math.ceil(contentMaxWidth);
+      else if (viewportWidth > 300 && viewportWidth <= 500) finalW = Math.ceil(viewportWidth);
+      else finalW = Math.max(Math.ceil(maxRight), document.body?.scrollWidth || 0, document.documentElement?.scrollWidth || 0, 320);
+      return { finalW, maxRight, contentMaxWidth, viewportWidth, scrollW: document.documentElement.scrollWidth };
     });
-    pdfWidth = detectedWidth || DEFAULT_VIEWPORT.width;
-    if (pdfWidth !== DEFAULT_VIEWPORT.width) {
-      await page.setViewport({ width: pdfWidth, height: DEFAULT_VIEWPORT.height });
-      await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
-    }
-    console.log(`📐 自动检测到内容宽度: ${pdfWidth}px`);
+    pdfWidth = detected.finalW || DEFAULT_VIEWPORT.width;
+    // ★ 关键：保持viewport不变，只把检测到的宽度用于PDF页面尺寸计算
+    console.log(`📐 检测到内容宽度: ${pdfWidth}px (maxRight=${detected.maxRight}, contentMaxWidth=${detected.contentMaxWidth}, scrollW=${detected.scrollW}), viewport保持 ${DEFAULT_VIEWPORT.width}px 不变`);
   }
 
   // Step3: 测量内容高度（使用 scrollHeight，与 V12 一致）
@@ -545,11 +545,16 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
 
     if (!needsSegmenting) {
       // ── 小页面：直接全页截图，简单高效 ──
-      const screenshotBuffer = await page.screenshot({
-        type: 'jpeg',
-        quality: 95,
-        fullPage: true
-      });
+      let screenshotBuffer;
+      try {
+        screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 95, fullPage: true });
+      } catch (screenshotErr) {
+        throw new Error(`截图失败: ${screenshotErr.message}`);
+      }
+      // ★ 防御：截图返回 0 字节是 Chromium 已知问题，捕获后抛出降级
+      if (!screenshotBuffer || screenshotBuffer.length === 0) {
+        throw new Error('截图返回空数据(0 bytes)，可能是 Chromium 渲染异常');
+      }
 
       const pdfW = effectiveWidth * 0.75;
       const pdfH = contentHeight * 0.75;
@@ -622,19 +627,13 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
 
       let segBuffer;
       try {
-        segBuffer = await page.screenshot({
-          type: 'jpeg',
-          quality: 95,
-          clip: clipRect
-        });
+        segBuffer = await page.screenshot({ type: 'jpeg', quality: 95, clip: clipRect });
       } catch (clipErr) {
-        // clip截图失败时尝试fullPage截图（降级方案）
         console.warn(`⚠️ 段 ${i + 1} clip截图失败，尝试fullPage:`, clipErr.message);
-        segBuffer = await page.screenshot({
-          type: 'jpeg',
-          quality: 90,
-          fullPage: true
-        });
+        segBuffer = await page.screenshot({ type: 'jpeg', quality: 90, fullPage: true });
+      }
+      if (!segBuffer || segBuffer.length === 0) {
+        throw new Error(`段 ${i + 1} 截图返回空数据(0 bytes)`);
       }
 
       // ★ 计算本段在 PDF 中的位置（从底部往上排列）
@@ -672,9 +671,19 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
  * 核心：HTML → PDF 转换（自动根据模式分发）
  */
 async function convertHtmlToPdf(htmlContent, options = {}) {
-  const mode = options.pdfMode || 'print';
+  // 如果前端显式指定了模式，尊重前端选择；否则默认 screenshot
+  const mode = options.pdfMode || 'screenshot';
+
+  // strategy: 优先截图模式（像素级精确），如果截图失败自动降级到打印模式
   if (mode === 'screenshot') {
-    return convertHtmlToPdfScreenshot(htmlContent, options);
+    try {
+      return await convertHtmlToPdfScreenshot(htmlContent, options);
+    } catch (screenshotErr) {
+      // 截图失败（如 Chromium 返回 0 字节、Page is too large 等）
+      // 自动降级到打印模式，确保用户始终能拿到 PDF
+      console.warn(`⚠️ 截图模式失败: ${screenshotErr.message}，自动降级到打印模式`);
+      return await convertHtmlToPdfPrint(htmlContent, options);
+    }
   }
   return convertHtmlToPdfPrint(htmlContent, options);
 }

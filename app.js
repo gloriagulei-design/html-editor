@@ -1175,9 +1175,9 @@ ${bodyContent}
       fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
       fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
 
-      // 使用打印模式（默认，速度快、文字可选、稳定性高）
-      // screenshot模式：像素级精确但生成慢、文件大、某些内容可能失败
-      const pdfMode = 'print';
+      // 使用截图模式（默认，像素级精确，所见即所得）
+      // print模式：文字可选、速度快，但可能产生空白区域
+      const pdfMode = 'screenshot';
       const pdfWidth = 'auto';
 
       // 带超时的 fetch 请求
