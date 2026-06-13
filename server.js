@@ -132,8 +132,13 @@ ${bodyContent}
     }
   }
 
-  // ── Step 8: 保留 @media print 样式（HTML作者可能依赖这些样式） ──
-  // 不删除 @media print，避免内容样式丢失
+  // ── Step 8: 移除 @media print 样式 ──
+  // 用户的 @media print 通常是为 A4 纸打印设计（如强制分页、透明背景、隐藏元素等）
+  // 而我们的目标是"所见即所得"的单页长 PDF，与 A4 打印完全不同
+  // 因此需要移除 @media print，确保浏览器中看到的效果 = PDF 中看到的效果
+  html = html.replace(/@media\s+print\s*\{[\s\S]*?\}\s*(?=\s*<\/style>|\s*@media|\s*<\/head>|\s*$)/gi, '');
+  // 同时移除独立的 @page 规则
+  html = html.replace(/@page\s*\{[\s\S]*?\}\s*/gi, '');
 
   // ── Step 9: 确保基础字体栈存在（防止系统无字体时渲染异常） ──
   const hasFontFamily = /font-family/i.test(html);
