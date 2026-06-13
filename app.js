@@ -1128,43 +1128,10 @@ ${bodyContent}
     btn.innerHTML = '<span class="spinner"></span> 生成中…';
 
     try {
-      // ★ 预处理：再次规范化 HTML（确保上传后的编辑没有破坏结构）
-      let fullHtml = normalizeHtml(currentHtml);
-
-      // 注入PDF渲染专用CSS：确保背景色保留、禁止分页、消除100vh空白
-      const pdfCssOverride = `
-<style id="pdf-render-override">
-  @media print {
-    *, *::before, *::after {
-      page-break-inside: auto !important;
-      break-inside: auto !important;
-      page-break-after: auto !important;
-      break-after: auto !important;
-      page-break-before: auto !important;
-      break-before: auto !important;
-    }
-  }
-  * {
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-    color-adjust: exact !important;
-  }
-  html, body {
-    overflow: visible !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: auto !important;
-  }
-</style>`;
-
-      // 在</head>前插入PDF CSS覆盖
-      if (fullHtml.includes('</head>')) {
-        fullHtml = fullHtml.replace('</head>', pdfCssOverride + '\n</head>');
-      } else if (fullHtml.includes('<body')) {
-        fullHtml = fullHtml.replace('<body', pdfCssOverride + '\n<body');
-      } else {
-        fullHtml = pdfCssOverride + fullHtml;
-      }
+      // ★ 直接传递原始HTML，后端会自动规范化并注入渲染CSS
+      // 后端server.js中的normalizeHtmlForPdf和BASE_CSS已处理所有PDF优化
+      // 前端只需做最小清理：移除编辑器注入的交互样式
+      let fullHtml = currentHtml;
 
       // 移除编辑器注入的交互样式（避免选中框/悬停效果出现在PDF中）
       fullHtml = fullHtml.replace(/<style id="html-editor-injected">[\s\S]*?<\/style>/gi, '');
@@ -1175,8 +1142,10 @@ ${bodyContent}
       fullHtml = fullHtml.replace(/\s*data-tag="[^"]*"/gi, '');
       fullHtml = fullHtml.replace(/\s*contenteditable="[^"]*"/gi, '');
 
+      // 移除可能由前端之前版本注入的pdf-render-override样式，避免重复
+      fullHtml = fullHtml.replace(/<style id="pdf-render-override">[\s\S]*?<\/style>/gi, '');
+
       // 使用打印模式（默认，速度快、文字可选、稳定性高）
-      // screenshot模式：像素级精确但生成慢，仅特殊场景使用
       const pdfMode = 'print';
       const pdfWidth = 'auto';
 

@@ -172,22 +172,44 @@ async function createRenderedPage(htmlContent, options = {}) {
   const measurements = await page.evaluate(() => {
     const de = document.documentElement;
     const body = document.body;
+    
+    // 临时移除body scrollbar以获得准确内容宽度
+    const originalOverflow = body?.style.overflow;
+    const originalOverflowX = body?.style.overflowX;
+    if (body) {
+      body.style.overflow = 'visible';
+      body.style.overflowX = 'visible';
+    }
+    
     const scrollW = Math.max(de.scrollWidth, body ? body.scrollWidth : 0);
-    const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
 
-    // 真实内容宽度（所有可见元素的最大right）
+    // ★★★ 真实内容尺寸：遍历所有可见元素获取最大right和bottom
+    // 注意：scrollHeight在overflow:auto/scroll容器中只返回可见区域高度，
+    // 不能反映被隐藏的内容。必须使用getBoundingClientRect或递归展开。
     let maxRight = 0;
+    let maxBottom = 0;
     document.querySelectorAll('body *').forEach(el => {
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-      maxRight = Math.max(maxRight, el.getBoundingClientRect().right);
+      const rect = el.getBoundingClientRect();
+      maxRight = Math.max(maxRight, rect.right);
+      maxBottom = Math.max(maxBottom, rect.bottom);
     });
+    // 同时考虑document的scrollHeight作为兜底
+    const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+    maxBottom = Math.max(maxBottom, scrollH);
+
+    // 恢复原始overflow
+    if (body) {
+      body.style.overflow = originalOverflow || '';
+      body.style.overflowX = originalOverflowX || '';
+    }
 
     const contentWidth = Math.max(Math.ceil(maxRight), scrollW, 320);
-    const contentHeight = Math.max(scrollH, 100);
+    const contentHeight = Math.max(Math.ceil(maxBottom), 100);
     const bgColor = getComputedStyle(body || de).backgroundColor || '#ffffff';
 
-    return { contentWidth, contentHeight, scrollW, maxRight, bgColor };
+    return { contentWidth, contentHeight, scrollW, maxRight, maxBottom, bgColor };
   });
 
   // 底部增加填充条消除白缝
@@ -208,17 +230,13 @@ async function createRenderedPage(htmlContent, options = {}) {
 }
 
 // ======== 基础CSS注入 ========
+// ★★★ 仅注入颜色保留，不修改布局属性。
+// 布局已在测量阶段确定，此处修改会破坏100vh、flex等布局。
 const BASE_CSS = `
 * {
   -webkit-print-color-adjust: exact !important;
   print-color-adjust: exact !important;
   color-adjust: exact !important;
-}
-html, body {
-  overflow: visible !important;
-  height: auto !important;
-  min-height: auto !important;
-  float: none !important;
 }
 `;
 
@@ -238,34 +256,35 @@ async function convertHtmlToPdfPrint(htmlContent, options = {}) {
     });
     await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
-    // 展开
-    await page.evaluate(() => {
-      document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
-      document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
-    });
-    await new Promise(r => setTimeout(r, 200));
-
-    // 注入CSS
+    // ★ 展开已在createRenderedPage中完成，无需重复
+    // 直接注入颜色保留CSS
     await page.addStyleTag({ content: BASE_CSS });
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-    // 重新测量最终尺寸
+    // 重新测量最终尺寸（同样使用max-bottom逻辑）
     const finalMeasurements = await page.evaluate(() => {
       const de = document.documentElement;
       const body = document.body;
-      return {
-        w: Math.max(de.scrollWidth, body ? body.scrollWidth : 0),
-        h: Math.max(de.scrollHeight, body ? body.scrollHeight : 0)
-      };
+      let maxW = Math.max(de.scrollWidth, body ? body.scrollWidth : 0);
+      let maxH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
+        maxW = Math.max(maxW, rect.right);
+        maxH = Math.max(maxH, rect.bottom);
+      });
+      return { w: maxW, h: maxH };
     });
 
     const pdfW = Math.max(finalMeasurements.w, 320);
     const pdfH = Math.max(finalMeasurements.h, 100);
 
     // ★★★ 成功经验：用 page.pdf({width, height}) 生成单页长PDF，不用 format:'A4'
+    // Puppeteer width/height 需带单位，px 表示 CSS 像素 (1px = 1/96 inch)
     const pdfBuffer = await page.pdf({
-      width: pdfW,
-      height: pdfH,
+      width: `${pdfW}px`,
+      height: `${pdfH}px`,
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
       preferCSSPageSize: false
@@ -302,7 +321,7 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
   console.log(`📐 [截图模式] 内容=${targetWidth}x${contentHeight}px, 分段=${needsSeg}, 段数=${segCount}`);
 
   try {
-    // 基础CSS
+    // 基础CSS（颜色保留），展开已在createRenderedPage中完成
     await page.addStyleTag({ content: BASE_CSS });
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
@@ -313,26 +332,20 @@ async function convertHtmlToPdfScreenshot(htmlContent, options = {}) {
     });
     await new Promise(r => setTimeout(r, TIMEOUTS.postViewport));
 
-    // 展开
-    await page.evaluate(() => {
-      document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
-      document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
-    });
-    await new Promise(r => setTimeout(r, 200));
-
     // PDF尺寸：CSS像素 * 0.75 = pt（points）
     const pdfW = targetWidth * 0.75;
     const pdfH = contentHeight * 0.75;
 
     // ----- 单段：直接截图嵌入 -----
     if (!needsSeg) {
+      // ★ fullPage截图会截取整个页面内容，即使viewport高度小于内容高度
       const ss = await page.screenshot({ type: 'jpeg', quality: 95, fullPage: true });
       if (!ss || ss.length === 0) throw new Error('截图返回空数据');
 
       const pdfDoc = await PDFDocument.create();
       const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
       const img = await pdfDoc.embedJpg(ss);
-      // ★★★ pdf-lib: y=0 是底部，图片铺满整页
+      // ★★★ pdf-lib y=0是左下角，fullPage截图高度=contentHeight，所以直接铺满
       pdfPage.drawImage(img, { x: 0, y: 0, width: pdfW, height: pdfH });
 
       const buf = await pdfDoc.save();
