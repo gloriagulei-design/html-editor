@@ -394,7 +394,7 @@ async function createRenderedPage(htmlContent, options = {}) {
   if (userPdfWidth) {
     pdfWidth = userPdfWidth;
   } else {
-    detectedWidth = await page.evaluate(() => {
+    const detectedWidth = await page.evaluate(() => {
       let maxRight = 0;
       document.querySelectorAll('body *').forEach(el => {
         const cs = getComputedStyle(el);
@@ -701,9 +701,9 @@ app.post('/api/html-to-pdf', async (req, res) => {
       return res.status(400).json({ error: '缺少 html 字段' });
     }
 
-    console.log(`📄 收到 PDF 转换请求，HTML 长度: ${html.length} 字符, PDF宽度: ${pdfWidth || 'auto'}, 模式: ${pdfMode || 'screenshot'}`);
+    console.log(`📄 收到 PDF 转换请求，HTML 长度: ${html.length} 字符, PDF宽度: ${pdfWidth || 'auto'}, 模式: ${pdfMode || 'print'}`);
 
-    const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'screenshot' });
+    const result = await convertHtmlToPdf(html, { pdfWidth: pdfWidth || 'auto', pdfMode: pdfMode || 'print' });
 
     clearTimeout(requestTimer);
 
