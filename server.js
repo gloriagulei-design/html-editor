@@ -248,6 +248,59 @@ async function convertHtmlToPdfPrint(htmlContent, options = {}) {
 
   try {
     const targetWidth = userPdfWidth || contentWidth;
+    // ★★★ 核心修复：在打印前将100vh转换为实际像素高度，避免空白
+    // 先获取每个使用了100vh的元素的当前实际渲染高度，然后设置为固定像素值
+    await page.evaluate(() => {
+      // 查找所有使用vh单位的min-height/height属性
+      const sheets = Array.from(document.styleSheets);
+      const vhSelectors = new Set();
+      
+      sheets.forEach(sheet => {
+        try {
+          Array.from(sheet.cssRules || []).forEach(rule => {
+            if (rule.style) {
+              const mh = rule.style.minHeight || '';
+              const h = rule.style.height || '';
+              if (mh.includes('vh') || h.includes('vh')) {
+                vhSelectors.add(rule.selectorText);
+              }
+            }
+          });
+        } catch (e) { /* 跨域样式表会报错，忽略 */ }
+      });
+      
+      // 同时检查行内样式
+      document.querySelectorAll('[style*="vh"]').forEach(el => {
+        const style = el.getAttribute('style') || '';
+        if (style.includes('min-height') && style.includes('vh')) {
+          const rect = el.getBoundingClientRect();
+          el.style.minHeight = rect.height + 'px';
+        }
+        if (style.includes('height') && style.includes('vh') && !style.includes('min-height')) {
+          const rect = el.getBoundingClientRect();
+          el.style.height = rect.height + 'px';
+        }
+      });
+      
+      // 对样式表匹配的元素也设置固定高度
+      vhSelectors.forEach(selector => {
+        try {
+          document.querySelectorAll(selector).forEach(el => {
+            const rect = el.getBoundingClientRect();
+            const computed = getComputedStyle(el);
+            // 如果元素当前高度是由vh决定的（内容高度小于元素高度）
+            if (rect.height > 0) {
+              el.style.minHeight = rect.height + 'px';
+              // 如果原样式有height:100vh，也冻结
+              if ((computed.height || '').includes('vh') || el.style.height.includes('vh')) {
+                el.style.height = rect.height + 'px';
+              }
+            }
+          });
+        } catch (e) { /* 忽略无效选择器 */ }
+      });
+    });
+    
     // ★★★ 成功经验：不设viewport高度为contentHeight，保持固定高度避免100vh元素拉伸
     await page.setViewport({
       width: Math.max(Math.round(targetWidth), 800),
