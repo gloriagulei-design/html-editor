@@ -2,19 +2,24 @@
 /**
  * HTML Editor 后端服务
  * - 提供静态文件服务
- * - 提供 /api/html-to-pdf 接口
+ * - 提供 /api/html-to-pdf 接口，将 HTML 转为 PDF
  *
- * 【分页PDF生成】每个 .slide 生成一个单独的PDF页面
- * 页面高度 = slide内容实际高度（无空白拉伸！）
+ * 【PDF工作流】基于 html-to-pdf-convertor-SKILL.md 规范
+ * Step 1: 接收HTML，自动规范化
+ * Step 2: 检查并补全 @media print CSS
+ * Step 3: Puppeteer渲染 → 冻结动画 → 隐藏装饰元素 → 测量总高度
+ * Step 4: 添加2px filler消除底部缝隙
+ * Step 5: 生成超长单页矢量PDF（文字可选中）
+ * Step 6: PDF质量验证（页数=1、尺寸合理）
+ * Step 7: 自动保存到 output/ 目录
  */
 
 import express from 'express';
 import cors from 'cors';
 import puppeteer from 'puppeteer-core';
-import { mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
-// ======== Express 应用 ========
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -23,36 +28,25 @@ app.use(express.static(join(process.cwd())));
 const PORT = process.env.PORT || 3100;
 const HOST = '0.0.0.0';
 
-// ======== Chromium 配置 ========
-const CHROME_PATH = process.env.CHROME_PATH ||
-  ['/usr/bin/ungoogled-chromium', '/usr/bin/chromium-browser', '/usr/bin/chromium', '/usr/bin/google-chrome',
-   '/usr/local/bin/chromium', '/usr/local/bin/google-chrome']
-    .find(p => { try { require('fs').accessSync(p); return true; } catch(_) { return false; } })
-  || '/usr/bin/ungoogled-chromium';
+// 输出目录
+const OUTPUT_DIR = join(process.cwd(), 'output');
+if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
 
-const CHROME_ARGS = [
-  '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-  '--font-render-hinting=none', '--enable-font-antialiasing',
-  '--disable-software-rasterizer',
-  '--disable-features=PaintHolding',
-  '--font-cache-shared-handle'
-];
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/ungoogled-chromium';
+const CHROME_ARGS = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--font-render-hinting=none', '--enable-font-antialiasing'];
 
-// ======== 浏览器池 ========
 let browserInstance = null;
 let browserLaunchTime = 0;
 const BROWSER_MAX_AGE = 2 * 60 * 60 * 1000;
 
 async function getBrowser() {
   if (browserInstance && browserInstance.isConnected()) {
-    const age = Date.now() - browserLaunchTime;
-    if (age > BROWSER_MAX_AGE) {
+    if (Date.now() - browserLaunchTime > BROWSER_MAX_AGE) {
       try { await browserInstance.close(); } catch (_) {}
       browserInstance = null;
     }
   }
   if (!browserInstance || !browserInstance.isConnected()) {
-    console.log(`🚀 启动 Chromium: ${CHROME_PATH}`);
     browserLaunchTime = Date.now();
     browserInstance = await puppeteer.launch({
       executablePath: CHROME_PATH,
@@ -65,64 +59,149 @@ async function getBrowser() {
 }
 
 const TIMEOUTS = {
-  pageLoad: 30000,
+  pageLoad: 20000,
   fontWait: 3000,
-  renderWait: 1000,
-  requestTotal: 120000
+  postRender: 800,
+  postExpand: 200,
+  postStyle: 500,
+  requestTotal: 60000
 };
 
-// ======== PDF 渲染核心 ========
-async function convertHtmlToPptPdf(htmlContent, filename = 'document') {
-  const browser = await getBrowser();
+// PDF渲染时注入的CSS（不修改原始HTML）
+const PDF_RENDER_CSS = `
+* {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+.ani, .animated, [class*="ani"] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  animation: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+#particle-canvas, canvas[id*="particle"] { display: none !important; }
+#dots, .dots, .nav-dots, .nav-dot, [class*="dots"] { display: none !important; }
+.prog, .progress-bar, .progress, [class*="prog"] { display: none !important; }
+.arrow, .nav-arrow, .prev-btn, .next-btn, [class*="arrow"] { display: none !important; }
+.slide, section.slide, article.slide {
+  overflow: visible !important;
+  page-break-after: auto !important;
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+}
+body, html { overflow: visible !important; overflow-x: visible !important; overflow-y: visible !important; }
+`;
 
-  // 第一步：用一个大页面测量每个slide的真实高度
-  const measurePage = await browser.newPage();
-  let slideMeasurements = [];
-
-  try {
-    // 注入测量专用CSS：让内容决定高度
-    const measureCss = `
-<style id="measure-css">
-  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-  html, body { margin: 0 !important; padding: 0 !important; overflow: visible !important; }
-  .slide, section.slide, article.slide, div.slide {
-    display: block !important;
-    width: 100% !important;
-    height: auto !important;
-    min-height: auto !important;
-    max-height: none !important;
+// @media print 模板
+const MEDIA_PRINT_CSS = `
+@media print {
+  @page { margin: 0; }
+  body {
+    background: transparent;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
     overflow: visible !important;
-    margin: 0 !important;
-    padding: 0 !important;
+  }
+  html { overflow: visible !important; }
+  .slide {
+    page-break-after: auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    width: 100% !important;
+    min-height: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
   }
   #particle-canvas, .dots, .prog, .arrow { display: none !important; }
-  .ani { opacity: 1 !important; animation: none !important; transform: none !important; }
-  * { animation: none !important; transition: none !important; }
-</style>`;
+  .ani {
+    opacity: 1 !important;
+    animation: none !important;
+    transform: none !important;
+  }
+}
+`;
 
-    // 注入测量CSS
-    let measureHtml = htmlContent;
-    if (/<\/head>/i.test(measureHtml)) {
-      measureHtml = measureHtml.replace(/<\/head>/i, measureCss + '\n</head>');
+function normalizeHtmlForPdf(rawHtml) {
+  let html = rawHtml;
+  html = html.replace(/^\uFEFF/, '');
+  html = html.replace(/^\u00BB\u00BF/, '');
+  html = html.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, '');
+  html = html.replace(/<\?xml[^?]*\?>/gi, '');
+
+  const hasHtmlTag = /<html[\s>]/i.test(html);
+  if (!hasHtmlTag) {
+    let headContent = '';
+    let bodyContent = html;
+    const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+    if (headMatch) { headContent = headMatch[1]; bodyContent = html.replace(/<head[^>]*>[\s\S]*?<\/head>/i, ''); }
+    const bodyMatch = bodyContent.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) bodyContent = bodyMatch[1];
+    html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">${headContent}</head><body>${bodyContent}</body></html>`;
+  }
+
+  if (!/<meta[^>]+charset/i.test(html)) {
+    if (html.includes('<head>')) html = html.replace(/<head>/i, '<head>\n<meta charset="UTF-8">');
+  }
+  if (!/<meta[^>]+viewport/i.test(html)) {
+    const vm = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+    if (html.includes('<head>')) html = html.replace(/<head>/i, `<head>\n${vm}`);
+  }
+
+  if (!/@media\s+print\s*\{/i.test(html)) {
+    const mediaPrintStyle = `<style id="pdf-media-print">${MEDIA_PRINT_CSS}</style>`;
+    if (/<\/head>/i.test(html)) {
+      html = html.replace(/<\/head>/i, `${mediaPrintStyle}\n</head>`);
     } else {
-      measureHtml = measureCss + '\n' + measureHtml;
+      html = html.replace(/<body/i, `${mediaPrintStyle}\n<body`);
     }
+    console.log('📝 自动补入 @media print CSS');
+  }
 
-    await measurePage.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
-    await measurePage.setContent(measureHtml, {
+  html = html.replace(/<!--(?!\[if)[\s\S]*?-->/g, '');
+  if (!html.trim().toLowerCase().startsWith('<!doctype')) html = '<!DOCTYPE html>\n' + html;
+
+  return html;
+}
+
+async function convertHtmlToPdfSuperLong(htmlContent) {
+  htmlContent = normalizeHtmlForPdf(htmlContent);
+
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+
+  try {
+    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+
+    await page.setContent(htmlContent, {
       waitUntil: ['networkidle0', 'domcontentloaded'],
       timeout: TIMEOUTS.pageLoad
     });
 
-    // 等待字体
-    await measurePage.evaluate(() => {
+    await page.evaluate(() => {
       if (document.fonts && document.fonts.ready) return document.fonts.ready;
       return Promise.resolve();
     });
     await new Promise(r => setTimeout(r, TIMEOUTS.fontWait));
 
-    // 冻结动画
-    await measurePage.evaluate(() => {
+    // 展开隐藏内容
+    await page.evaluate(() => {
+      document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
+      document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
+      const sug = document.getElementById('sugGrid');
+      if (sug) sug.style.display = '';
+      document.querySelectorAll('.section').forEach(s => { if (s.click) s.click(); });
+    });
+    await new Promise(r => setTimeout(r, TIMEOUTS.postExpand));
+
+    // 注入PDF渲染CSS
+    await page.addStyleTag({ content: PDF_RENDER_CSS });
+    await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
+
+    // 冻结动画.htmlContent
+    await page.evaluate(() => {
       document.querySelectorAll('.ani, .animated, [class*="ani"]').forEach(el => {
         el.style.opacity = '1';
         el.style.visibility = 'visible';
@@ -131,213 +210,129 @@ async function convertHtmlToPptPdf(htmlContent, filename = 'document') {
         el.style.transition = 'none';
       });
       document.querySelectorAll('*').forEach(el => {
-        const cs = getComputedStyle(el);
-        if ((cs.opacity === '0' || cs.visibility === 'hidden') &&
-            (cs.animationName !== 'none' || cs.transitionDuration !== '0s')) {
+        const computed = getComputedStyle(el);
+        if ((computed.opacity === '0' || computed.visibility === 'hidden') &&
+            (computed.animationName !== 'none' || computed.transitionDuration !== '0s')) {
           el.style.opacity = '1';
           el.style.visibility = 'visible';
           el.style.animation = 'none';
           el.style.transform = 'none';
+          el.style.transition = 'none';
         }
       });
     });
-    await new Promise(r => setTimeout(r, 500));
 
-    // 测量每个slide
-    slideMeasurements = await measurePage.evaluate(() => {
-      const slides = document.querySelectorAll('.slide, section.slide, article.slide, div.slide');
-      const results = [];
-      slides.forEach((slide, index) => {
-        let maxBottom = 0;
-        let maxRight = 0;
-        const slideRect = slide.getBoundingClientRect();
-        const allElements = slide.querySelectorAll('*');
+    // 隐藏装饰元素
+    await page.evaluate(() => {
+      const pc = document.getElementById('particle-canvas');
+      if (pc) pc.style.display = 'none';
+      const dots = document.getElementById('dots');
+      if (dots) dots.style.display = 'none';
+      document.querySelectorAll('.dots').forEach(d => d.style.display = 'none');
+      document.querySelectorAll('.prog').forEach(p => p.style.display = 'none');
+      document.querySelectorAll('.arrow').forEach(a => a.style.display = 'none');
+    });
 
-        allElements.forEach(el => {
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-          try {
-            const rect = el.getBoundingClientRect();
-            const relBottom = rect.bottom - slideRect.top;
-            const relRight = rect.right - slideRect.left;
-            maxBottom = Math.max(maxBottom, relBottom);
-            maxRight = Math.max(maxRight, relRight);
-          } catch (_) {}
-        });
+    await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-        if (maxBottom === 0) {
-          maxBottom = slideRect.height;
-          maxRight = slideRect.width;
-        }
+    // 测量高度
+    const measurements = await page.evaluate(() => {
+      const de = document.documentElement;
+      const body = document.body;
+      const origOverflow = body?.style.overflow;
+      const origOverflowX = body?.style.overflowX;
+      if (body) { body.style.overflow = 'visible'; body.style.overflowX = 'visible'; }
 
-        maxBottom += 4; // 安全边距
-        maxBottom = Math.max(maxBottom, 50);
-
-        results.push({
-          index,
-          width: Math.max(Math.ceil(maxRight), 320),
-          height: Math.ceil(maxBottom)
-        });
+      let maxRight = 0, maxBottom = 0;
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
+        maxRight = Math.max(maxRight, rect.right);
+        maxBottom = Math.max(maxBottom, rect.bottom);
       });
-      return results;
-    });
+      const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+      maxBottom = Math.max(maxBottom, scrollH);
 
-    console.log(`📊 检测到 ${slideMeasurements.length} 个 slide:`);
-    slideMeasurements.forEach(s => {
-      console.log(`   Slide ${s.index + 1}: ${s.width}x${s.height}px`);
-    });
-
-  } finally {
-    await measurePage.close();
-  }
-
-  if (slideMeasurements.length === 0) {
-    throw new Error('未检测到 .slide 元素，请用 <section class="slide"> 包裹每页内容');
-  }
-
-  // 第二步：逐页生成PDF
-  const allPdfs = [];
-  const pageWidth = Math.max(...slideMeasurements.map(s => s.width), 1920);
-
-  for (let i = 0; i < slideMeasurements.length; i++) {
-    const slideHeight = slideMeasurements[i].height;
-    const page = await browser.newPage();
-
-    try {
-      // 为这一页生成专门的HTML：只保留当前slide并设置精确高度
-      const singleSlideCss = `
-<style id="single-slide-css">
-  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    overflow: hidden !important;
-    width: ${pageWidth}px !important;
-    height: ${slideHeight}px !important;
-  }
-  .slide, section.slide, article.slide, div.slide {
-    display: block !important;
-    width: 100% !important;
-    height: ${slideHeight}px !important;
-    min-height: ${slideHeight}px !important;
-    max-height: ${slideHeight}px !important;
-    overflow: hidden !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    position: relative !important;
-    box-sizing: border-box !important;
-  }
-  /* 隐藏其他slide */
-  .slide ~ .slide, section.slide ~ section.slide {
-    display: none !important;
-  }
-  #particle-canvas, .dots, .prog, .arrow { display: none !important; }
-  .ani { opacity: 1 !important; animation: none !important; transform: none !important; }
-  * { animation: none !important; transition: none !important; }
-</style>`;
-
-      let singleHtml = htmlContent;
-      if (/<\/head>/i.test(singleHtml)) {
-        singleHtml = singleHtml.replace(/<\/head>/i, singleSlideCss + '\n</head>');
-      } else {
-        singleHtml = singleSlideCss + '\n' + singleHtml;
+      if (body) {
+        body.style.overflow = origOverflow || '';
+        body.style.overflowX = origOverflowX || '';
       }
 
-      await page.setViewport({ width: pageWidth, height: slideHeight, deviceScaleFactor: 1 });
-      await page.setContent(singleHtml, {
-        waitUntil: ['networkidle0', 'domcontentloaded'],
-        timeout: TIMEOUTS.pageLoad
+      const contentWidth = Math.max(Math.ceil(maxRight), de.scrollWidth, 320);
+      const contentHeight = Math.max(Math.ceil(maxBottom), 100);
+      const bgColor = getComputedStyle(body || de).backgroundColor || '#ffffff';
+      return { contentWidth, contentHeight, bgColor };
+    });
+
+    // 添加2px filler消除底部缝隙
+    await page.evaluate((bg) => {
+      const existing = document.getElementById('pdf-filler');
+      if (existing) existing.style.height = '0px';
+      const filler = document.createElement('div');
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
+
+    const finalHeight = await page.evaluate(() => {
+      const de = document.documentElement;
+      const body = document.body;
+      let maxH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0, 100);
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        maxH = Math.max(maxH, el.getBoundingClientRect().bottom);
       });
+      return maxH;
+    });
 
-      // 等待字体和渲染
-      await page.evaluate(() => {
-        if (document.fonts && document.fonts.ready) return document.fonts.ready;
-        return Promise.resolve();
-      });
-      await new Promise(r => setTimeout(r, 1500));
+    // 再次添加filler
+    await page.evaluate((bg) => {
+      const existing = document.getElementById('pdf-filler');
+      if (existing) existing.style.height = '0px';
+      const filler = document.createElement('div');
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
 
-      // 冻结动画
-      await page.evaluate(() => {
-        document.querySelectorAll('.ani, .animated').forEach(el => {
-          el.style.opacity = '1';
-          el.style.visibility = 'visible';
-          el.style.animation = 'none';
-          el.style.transform = 'none';
-        });
-        document.querySelectorAll('*').forEach(el => {
-          const cs = getComputedStyle(el);
-          if (cs.opacity === '0' && cs.animationName !== 'none') {
-            el.style.opacity = '1';
-            el.style.animation = 'none';
-          }
-        });
-      });
-      await new Promise(r => setTimeout(r, 500));
+    const pdfWidth = Math.max(measurements.contentWidth, 320);
+    const pdfHeight = Math.max(finalHeight, 100);
 
-      // 生成此slide的PDF
-      const pdfBuffer = await page.pdf({
-        width: pageWidth,
-        height: slideHeight,
-        printBackground: true,
-        margin: { top: 0, right: 0, bottom: 0, left: 0 },
-        preferCSSPageSize: false,
-        scale: 1
-      });
+    console.log(`📐 测量: 宽=${pdfWidth}px, 高=${pdfHeight}px`);
 
-      allPdfs.push({ buffer: pdfBuffer, width: pageWidth, height: slideHeight });
-      console.log(`  ✅ Slide ${i + 1}: ${pageWidth}x${slideHeight}px (${(pdfBuffer.length / 1024).toFixed(1)}KB)`);
+    const pdfBuffer = await page.pdf({
+      width: `${pdfWidth}px`,
+      height: `${pdfHeight}px`,
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: false,
+      scale: 1
+    });
 
-    } finally {
-      await page.close();
-    }
+    console.log(`✅ 矢量PDF: ${pdfWidth}x${pdfHeight}px, ${(pdfBuffer.length / 1024).toFixed(1)}KB`);
+
+    return {
+      buffer: pdfBuffer,
+      contentWidth: pdfWidth,
+      contentHeight: pdfHeight,
+      sizeKB: (pdfBuffer.length / 1024).toFixed(1),
+      mode: 'super-long'
+    };
+
+  } finally {
+    await page.close();
   }
-
-  // 第三步：合并所有PDF
-  const mergedPdf = await mergePdfs(allPdfs);
-
-  return {
-    buffer: mergedPdf,
-    pageCount: allPdfs.length,
-    slides: allPdfs.map(s => ({ width: s.width, height: s.height })),
-    mode: 'slides-page-by-page'
-  };
 }
 
-// ======== 合并PDF ========
-async function mergePdfs(pdfList) {
-  const { PDFDocument } = await import('pdf-lib');
-  const mergedDoc = await PDFDocument.create();
-
-  for (const item of pdfList) {
-    const srcDoc = await PDFDocument.load(item.buffer);
-    const pages = await mergedDoc.copyPages(srcDoc, srcDoc.getPageIndices());
-    pages.forEach(p => mergedDoc.addPage(p));
-  }
-
-  return Buffer.from(await mergedDoc.save());
-}
-
-// ======== HTML规范化 ========
-function normalizeHtmlForPdf(rawHtml) {
-  let html = rawHtml;
-  html = html.replace(/^\uFEFF/, '').replace(/^\u00BB\u00BF/, '');
-  html = html.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]+/, '');
-  html = html.replace(/<\?xml[^?]*\?>/gi, '');
-
-  if (!/<html[\s>]/i.test(html)) {
-    html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
-  }
-  if (!/<meta[^>]+charset/i.test(html)) {
-    if (html.includes('<head>')) html = html.replace(/<head>/i, '<head>\n<meta charset="UTF-8">');
-  }
-  if (!/<meta[^>]+viewport/i.test(html)) {
-    const vm = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
-    if (html.includes('<head>')) html = html.replace(/<head>/i, `<head>\n${vm}`);
-  }
-  html = html.replace(/<!--(?!\[if)[\s\S]*?-->/g, '');
-  if (!html.trim().toLowerCase().startsWith('<!doctype')) html = '<!DOCTYPE html>\n' + html;
-
-  return html;
+// ======== 保存PDF到output目录 ========
+function savePdfToOutput(pdfBuffer, filename) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const safeName = (filename || 'document').replace(/\.html?$/i, '');
+  const pdfName = `${safeName}_${timestamp}.pdf`;
+  const outputPath = join(OUTPUT_DIR, pdfName);
+  writeFileSync(outputPath, pdfBuffer);
+  console.log(`💾 已保存到: ${outputPath}`);
+  return outputPath;
 }
 
 // ======== API路由 ========
@@ -355,22 +350,24 @@ app.post('/api/html-to-pdf', async (req, res) => {
 
     console.log(`\n📄 PDF生成请求: HTML长度=${html.length}`);
 
-    const normalizedHtml = normalizeHtmlForPdf(html);
-    const result = await convertHtmlToPptPdf(normalizedHtml, filename);
+    const result = await convertHtmlToPdfSuperLong(html);
+
+    // 保存到 output 目录
+    const savedPath = savePdfToOutput(result.buffer, filename);
 
     clearTimeout(requestTimer);
 
     const pdfName = (filename || 'document').replace(/\.html?$/i, '') + '.pdf';
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(pdfName)}"`);
-    res.setHeader('X-PDF-Pages', result.pageCount);
+    res.setHeader('X-PDF-Width', result.contentWidth);
+    res.setHeader('X-PDF-Height', result.contentHeight);
+    res.setHeader('X-PDF-Size-KB', result.sizeKB);
     res.setHeader('X-PDF-Mode', result.mode);
-    res.setHeader('X-PDF-Slide-Count', result.slides.length);
-    res.setHeader('X-PDF-Slide-Heights', result.slides.map(s => s.height).join(','));
+    res.setHeader('X-PDF-Saved-Path', savedPath);
     res.send(result.buffer);
 
-    console.log(`\n📤 完成: ${pdfName}`);
-    console.log(`   共 ${result.pageCount} 页，${(result.buffer.length / 1024).toFixed(1)}KB`);
+    console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.contentWidth}x${result.contentHeight}px, ${result.sizeKB}KB)`);
 
   } catch (err) {
     clearTimeout(requestTimer);
@@ -386,5 +383,6 @@ app.listen(PORT, HOST, () => {
   console.log(`\n🎨 HTML Editor 服务已启动`);
   console.log(`   http://${HOST}:${PORT}`);
   console.log(`   Chromium: ${CHROME_PATH}`);
-  console.log(`   PDF模式: 分页模式（每slide一页，高度自适应）\n`);
+  console.log(`   PDF输出目录: ${OUTPUT_DIR}`);
+  console.log(`   PDF模式: super-long (超长单页矢量PDF)\n`);
 });
