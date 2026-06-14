@@ -1342,9 +1342,7 @@ ${bodyContent}
       const pdfWidth = response.headers.get('X-PDF-Width') || '?';
       const pdfHeight = response.headers.get('X-PDF-Height') || '?';
       const sizeKB = response.headers.get('X-PDF-Size-KB') || '?';
-      const savedPath = response.headers.get('X-PDF-Saved-Path') || '';
-      const saveMsg = savedPath ? `\n已备份: ${savedPath.replace(/^.*\//, '')}` : '';
-      showToast(`✅ PDF 已导出: ${pdfWidth}×${pdfHeight}px, ${sizeKB}KB${saveMsg}`, 'success');
+      showToast(`✅ PDF 已导出: ${pdfWidth}×${pdfHeight}px, ${sizeKB}KB`, 'success');
 
     } catch (err) {
       console.error('PDF 导出失败:', err);

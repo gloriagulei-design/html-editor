@@ -364,7 +364,6 @@ app.post('/api/html-to-pdf', async (req, res) => {
     res.setHeader('X-PDF-Height', result.contentHeight);
     res.setHeader('X-PDF-Size-KB', result.sizeKB);
     res.setHeader('X-PDF-Mode', result.mode);
-    res.setHeader('X-PDF-Saved-Path', savedPath);
     res.send(result.buffer);
 
     console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.contentWidth}x${result.contentHeight}px, ${result.sizeKB}KB)`);
