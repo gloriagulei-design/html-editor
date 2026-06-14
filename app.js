@@ -1333,7 +1333,10 @@ ${bodyContent}
       const a = document.createElement('a');
       a.href = url;
       a.download = pdfName;
+      a.style.display = 'none';
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
       const pdfWidth = response.headers.get('X-PDF-Width') || '?';
