@@ -4,14 +4,19 @@
  * - 提供静态文件服务
  * - 提供 /api/html-to-pdf 接口，将 HTML 转为 PDF
  *
- * 【PDF工作流】按HTML中每个 .slide 的实际高度分页生成PDF
- * 每页高度 = 该slide实际高度（不固定），页与页之间无空白、无截断
+ * 【PDF工作流】基于 html-to-pdf-convertor-SKILL.md 规范
+ * Step 1: 接收HTML，自动规范化
+ * Step 2: 检查并补全 @media print CSS
+ * Step 3: Puppeteer渲染 → 冻结动画 → 隐藏装饰元素 → 测量总高度
+ * Step 4: 添加2px filler消除底部缝隙
+ * Step 5: 生成超长单页矢量PDF（文字可选中）
+ * Step 6: PDF质量验证（页数=1、尺寸合理）
+ * Step 7: 自动保存到 output/ 目录
  */
 
 import express from 'express';
 import cors from 'cors';
 import puppeteer from 'puppeteer-core';
-import { PDFDocument } from 'pdf-lib';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -59,7 +64,7 @@ const TIMEOUTS = {
   postRender: 800,
   postExpand: 200,
   postStyle: 500,
-  requestTotal: 120000
+  requestTotal: 60000
 };
 
 // PDF渲染时注入的CSS（不修改原始HTML）
@@ -161,8 +166,7 @@ function normalizeHtmlForPdf(rawHtml) {
   return html;
 }
 
-// ============ 核心：按 slide 动态高度分页生成PDF ============
-async function convertHtmlToPdfBySlides(htmlContent) {
+async function convertHtmlToPdfSuperLong(htmlContent) {
   htmlContent = normalizeHtmlForPdf(htmlContent);
 
   const browser = await getBrowser();
@@ -196,7 +200,7 @@ async function convertHtmlToPdfBySlides(htmlContent) {
     await page.addStyleTag({ content: PDF_RENDER_CSS });
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-    // 冻结动画
+    // 冻结动画.htmlContent
     await page.evaluate(() => {
       document.querySelectorAll('.ani, .animated, [class*="ani"]').forEach(el => {
         el.style.opacity = '1';
@@ -231,206 +235,93 @@ async function convertHtmlToPdfBySlides(htmlContent) {
 
     await new Promise(r => setTimeout(r, TIMEOUTS.postStyle));
 
-    // 获取所有slide信息
-    const slidesInfo = await page.evaluate(() => {
-      const slides = document.querySelectorAll('section.slide, .slide');
-      if (slides.length === 0) return null;
+    // 测量高度
+    const measurements = await page.evaluate(() => {
+      const de = document.documentElement;
+      const body = document.body;
+      const origOverflow = body?.style.overflow;
+      const origOverflowX = body?.style.overflowX;
+      if (body) { body.style.overflow = 'visible'; body.style.overflowX = 'visible'; }
 
-      const info = [];
-      slides.forEach((slide, i) => {
-        slide.style.height = 'auto';
-        slide.style.minHeight = 'auto';
-        slide.style.maxHeight = 'none';
-        slide.style.overflow = 'visible';
-        slide.style.display = 'block';
-
-        let maxBottom = 0;
-        slide.querySelectorAll('*').forEach(el => {
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-          maxBottom = Math.max(maxBottom, el.getBoundingClientRect().bottom);
-        });
-
-        const rect = slide.getBoundingClientRect();
-        const height = Math.max(Math.ceil(maxBottom - rect.top), Math.ceil(rect.height), 100);
-
-        info.push({ index: i, height, width: Math.max(Math.ceil(rect.width), 320) });
+      let maxRight = 0, maxBottom = 0;
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const rect = el.getBoundingClientRect();
+        maxRight = Math.max(maxRight, rect.right);
+        maxBottom = Math.max(maxBottom, rect.bottom);
       });
-      return info;
+      const scrollH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0);
+      maxBottom = Math.max(maxBottom, scrollH);
+
+      if (body) {
+        body.style.overflow = origOverflow || '';
+        body.style.overflowX = origOverflowX || '';
+      }
+
+      const contentWidth = Math.max(Math.ceil(maxRight), de.scrollWidth, 320);
+      const contentHeight = Math.max(Math.ceil(maxBottom), 100);
+      const bgColor = getComputedStyle(body || de).backgroundColor || '#ffffff';
+      return { contentWidth, contentHeight, bgColor };
     });
 
-    // 如果没有 .slide，回退到单页模式
-    if (!slidesInfo || slidesInfo.length === 0) {
-      console.log('⚠️ 未找到 .slide 元素，回退到单页模式');
-      return await fallbackSinglePage(page);
-    }
+    // 添加2px filler消除底部缝隙
+    await page.evaluate((bg) => {
+      const existing = document.getElementById('pdf-filler');
+      if (existing) existing.style.height = '0px';
+      const filler = document.createElement('div');
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
 
-    console.log(`📑 检测到 ${slidesInfo.length} 个 slide，生成多页PDF（每页高度自适应）`);
-
-    // 获取body背景色（用于filler）
-    const bgColor = await page.evaluate(() => {
-      return getComputedStyle(document.body || document.documentElement).backgroundColor || '#ffffff';
+    const finalHeight = await page.evaluate(() => {
+      const de = document.documentElement;
+      const body = document.body;
+      let maxH = Math.max(de.scrollHeight, body ? body.scrollHeight : 0, 100);
+      document.querySelectorAll('body *').forEach(el => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        maxH = Math.max(maxH, el.getBoundingClientRect().bottom);
+      });
+      return maxH;
     });
 
-    // 合并PDF
-    const mergedPdf = await PDFDocument.create();
-    let maxWidth = 0;
+    // 再次添加filler
+    await page.evaluate((bg) => {
+      const existing = document.getElementById('pdf-filler');
+      if (existing) existing.style.height = '0px';
+      const filler = document.createElement('div');
+      filler.style.cssText = `height:2px;width:100%;background:${bg};flex-shrink:0;`;
+      document.body.appendChild(filler);
+    }, measurements.bgColor);
 
-    for (let i = 0; i < slidesInfo.length; i++) {
-      const slideInfo = slidesInfo[i];
-      maxWidth = Math.max(maxWidth, slideInfo.width);
+    const pdfWidth = Math.max(measurements.contentWidth, 320);
+    const pdfHeight = Math.max(finalHeight, 100);
 
-      // 只保留当前slide可见，其他全部隐藏
-      await page.evaluate((currentIndex) => {
-        const allSlides = document.querySelectorAll('section.slide, .slide');
-        allSlides.forEach((slide, idx) => {
-          if (idx === currentIndex) {
-            slide.style.display = 'block';
-            slide.style.visibility = 'visible';
-            slide.style.opacity = '1';
-            slide.style.height = 'auto';
-            slide.style.minHeight = 'auto';
-            slide.style.maxHeight = 'none';
-            slide.style.overflow = 'visible';
-            slide.style.position = 'static';
-            slide.style.transform = 'none';
-          } else {
-            slide.style.display = 'none';
-          }
-        });
+    console.log(`📐 测量: 宽=${pdfWidth}px, 高=${pdfHeight}px`);
 
-        // 隐藏body下非slide的直接子元素
-        document.querySelectorAll('body > *').forEach(el => {
-          const isSlide = el.matches('section.slide, .slide') ||
-                         el.querySelector('section.slide') ||
-                         el.querySelector('.slide');
-          if (!isSlide && !el.closest('section.slide') && !el.closest('.slide')) {
-            el.style.display = 'none';
-          }
-        });
+    const pdfBuffer = await page.pdf({
+      width: `${pdfWidth}px`,
+      height: `${pdfHeight}px`,
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: false,
+      scale: 1
+    });
 
-        document.body.style.margin = '0';
-        document.body.style.padding = '0';
-        document.body.style.overflow = 'visible';
-        document.documentElement.style.overflow = 'visible';
-      }, i);
-
-      await new Promise(r => setTimeout(r, 600));
-
-      // 重新测量实际高度（隐藏其他元素后可能有变化）
-      const actualHeight = await page.evaluate((currentIndex) => {
-        const allSlides = document.querySelectorAll('section.slide, .slide');
-        const slide = allSlides[currentIndex];
-        if (!slide) return 100;
-
-        let maxBottom = 0;
-        slide.querySelectorAll('*').forEach(el => {
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
-          const r = el.getBoundingClientRect();
-          maxBottom = Math.max(maxBottom, r.bottom);
-        });
-
-        const sRect = slide.getBoundingClientRect();
-        maxBottom = Math.max(maxBottom, sRect.bottom);
-
-        return Math.max(Math.ceil(maxBottom), Math.ceil(sRect.height), 100);
-      }, i);
-
-      console.log(`  📄 Slide ${i + 1}: ${slideInfo.width}×${actualHeight}px`);
-
-      // 添加3px filler消除底部缝隙
-      await page.evaluate((bg, currentIndex) => {
-        const allSlides = document.querySelectorAll('section.slide, .slide');
-        const slide = allSlides[currentIndex];
-        if (!slide) return;
-
-        let existing = slide.querySelector(':scope > .pdf-filler-bottom');
-        if (existing) existing.remove();
-
-        const filler = document.createElement('div');
-        filler.className = 'pdf-filler-bottom';
-        filler.style.cssText = `height:3px;width:100%;background:${bg};flex-shrink:0;display:block;`;
-        slide.appendChild(filler);
-      }, bgColor, i);
-
-      await new Promise(r => setTimeout(r, 200));
-
-      // 生成单页PDF（高度=该slide实际高度）
-      const pdfBuf = await page.pdf({
-        width: `${slideInfo.width}px`,
-        height: `${actualHeight + 3}px`,
-        printBackground: true,
-        margin: { top: 0, right: 0, bottom: 0, left: 0 },
-        preferCSSPageSize: false,
-        scale: 1
-      });
-
-      const singlePdf = await PDFDocument.load(pdfBuf);
-      const copiedPages = await mergedPdf.copyPages(singlePdf, singlePdf.getPageIndices());
-      copiedPages.forEach(p => mergedPdf.addPage(p));
-    }
-
-    const finalBuffer = await mergedPdf.save();
-    const totalHeight = slidesInfo.reduce((sum, s) => sum + s.height, 0);
-
-    console.log(`✅ 多页PDF: ${slidesInfo.length}页, 宽${maxWidth}px, ${(finalBuffer.length / 1024).toFixed(1)}KB`);
+    console.log(`✅ 矢量PDF: ${pdfWidth}x${pdfHeight}px, ${(pdfBuffer.length / 1024).toFixed(1)}KB`);
 
     return {
-      buffer: finalBuffer,
-      contentWidth: maxWidth,
-      contentHeight: totalHeight,
-      sizeKB: (finalBuffer.length / 1024).toFixed(1),
-      mode: 'slides-dynamic-height',
-      pageCount: slidesInfo.length
+      buffer: pdfBuffer,
+      contentWidth: pdfWidth,
+      contentHeight: pdfHeight,
+      sizeKB: (pdfBuffer.length / 1024).toFixed(1),
+      mode: 'super-long'
     };
 
   } finally {
     await page.close();
   }
-}
-
-// 回退：单页PDF（当没有 .slide 时）
-async function fallbackSinglePage(page) {
-  await page.evaluate(() => {
-    document.querySelectorAll('.tc').forEach(t => t.classList.add('act'));
-    document.querySelectorAll('.fi').forEach(el => el.classList.add('sho'));
-    document.querySelectorAll('.ani, .animated, [class*="ani"]').forEach(el => {
-      el.style.opacity = '1'; el.style.visibility = 'visible';
-      el.style.animation = 'none'; el.style.transform = 'none';
-    });
-    const pc = document.getElementById('particle-canvas');
-    if (pc) pc.style.display = 'none';
-  });
-  await new Promise(r => setTimeout(r, 500));
-
-  const dims = await page.evaluate(() => {
-    const de = document.documentElement;
-    const body = document.body;
-    let maxH = 0;
-    document.querySelectorAll('body *').forEach(el => {
-      const cs = getComputedStyle(el);
-      if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0') {
-        maxH = Math.max(maxH, el.getBoundingClientRect().bottom);
-      }
-    });
-    return { width: Math.max(de.scrollWidth, 320), height: Math.max(maxH, 100) };
-  });
-
-  const pdfBuf = await page.pdf({
-    width: `${dims.width}px`,
-    height: `${dims.height}px`,
-    printBackground: true,
-    margin: { top: 0, right: 0, bottom: 0, left: 0 }
-  });
-
-  return {
-    buffer: pdfBuf,
-    contentWidth: dims.width,
-    contentHeight: dims.height,
-    sizeKB: (pdfBuf.length / 1024).toFixed(1),
-    mode: 'single-page'
-  };
 }
 
 // ======== 保存PDF到output目录 ========
@@ -459,7 +350,7 @@ app.post('/api/html-to-pdf', async (req, res) => {
 
     console.log(`\n📄 PDF生成请求: HTML长度=${html.length}`);
 
-    const result = await convertHtmlToPdfBySlides(html);
+    const result = await convertHtmlToPdfSuperLong(html);
 
     // 保存到 output 目录
     const savedPath = savePdfToOutput(result.buffer, filename);
@@ -475,12 +366,11 @@ app.post('/api/html-to-pdf', async (req, res) => {
     res.setHeader('X-PDF-Mode', result.mode);
     res.send(result.buffer);
 
-    console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.pageCount || 1}页, ${result.sizeKB}KB)`);
+    console.log(`📤 完成: ${pdfName} (${result.mode}, ${result.contentWidth}x${result.contentHeight}px, ${result.sizeKB}KB)`);
 
   } catch (err) {
     clearTimeout(requestTimer);
     console.error('❌ PDF转换失败:', err.message);
-    console.error(err.stack);
     if (!res.headersSent) res.status(500).json({ error: 'PDF转换失败: ' + err.message });
   }
 });
@@ -493,5 +383,5 @@ app.listen(PORT, HOST, () => {
   console.log(`   http://${HOST}:${PORT}`);
   console.log(`   Chromium: ${CHROME_PATH}`);
   console.log(`   PDF输出目录: ${OUTPUT_DIR}`);
-  console.log(`   PDF模式: 按slide分页，每页高度自适应\n`);
+  console.log(`   PDF模式: super-long (超长单页矢量PDF)\n`);
 });

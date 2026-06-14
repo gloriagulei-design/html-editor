@@ -55,7 +55,11 @@ async function testPdfGeneration() {
     console.log('📐 X-PDF-Mode:', response.headers.get('X-PDF-Mode'));
     console.log('📂 保存位置:', outputPath);
 
-    if (pageCount === 1 && height > 500) {
+    const mode = response.headers.get('X-PDF-Mode');
+
+    if (mode === 'slides-dynamic-height' && pageCount > 1) {
+      console.log('\n🎉 PDF验证通过：多页模式，共', pageCount, '页，每页高度自适应！');
+    } else if (pageCount === 1 && height > 500) {
       console.log('\n🎉 PDF验证通过：页数=1，高度合理！');
     } else {
       console.warn('\n⚠️ PDF验证警告: 页数或高度异常');
